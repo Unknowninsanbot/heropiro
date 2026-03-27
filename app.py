@@ -1147,7 +1147,18 @@ def format_approved_cards_detailed(approved_list):
     message += "━━━━━━━━━━━━━━━━━━━━"
     return message
 
-
+@bot.message_handler(commands=['addproxies'])
+def handle_add_proxies(message):
+    """Owner-only command to bulk add proxies from a .txt file."""
+    if not is_owner(message.from_user.id):
+        bot.reply_to(message, "🚫 Owner only command.")
+        return
+    # Prompt user to send a .txt file
+    bot.reply_to(message, "📂 <b>Send a .txt file containing proxies.</b>\n\n"
+                          "Format: <code>ip:port:user:pass</code> (or <code>ip:port</code> if no auth)\n"
+                          "One proxy per line.",
+                          parse_mode='HTML')
+    bot.register_next_step_handler(message, process_proxy_file_upload)
 # ============================================================================
 # 8. TXT FILE HANDLER & MESSAGE HANDLERS
 # ============================================================================
@@ -4703,8 +4714,7 @@ def process_clean_sites(message):
 
                 # ----- KEEP ONLY SITES THAT RETURN "DECLINED" -----
                 # (case‑insensitive check)
-                if "DECLINED" in response_str:
-                    # Update site info
+                if "DECLINED" in response_str or "GENERIC_ERROR" in response_str:
                     site_obj['last_response'] = response_str[:30]
                     valid_sites.append(site_obj)
                 # else: site is removed (not added to valid_sites)
