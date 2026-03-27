@@ -1218,7 +1218,65 @@ def format_approved_cards_detailed(approved_list):
 #             bot.reply_to(message, f"❌ Error: {str(e)}")
 #             logger.error(f"File upload error: {e}")
     
-    
+
+
+@bot.message_handler(commands=['cleanfile'])
+def handle_clean_file(message):
+    if not is_owner(message.from_user.id):
+        return
+
+    # Ask the user to upload a .txt file
+    msg = bot.reply_to(message, "📂 Please upload the .txt file you want to clean.")
+    bot.register_next_step_handler(msg, process_clean_file)
+
+def process_clean_file(message):
+    try:
+        if not message.document or not message.document.file_name.endswith('.txt'):
+            bot.reply_to(message, "❌ Please send a .txt file.")
+            return
+
+        status_msg = bot.reply_to(message, "⏳ Processing file...")
+        file_info = bot.get_file(message.document.file_id)
+        file_data = bot.download_file(file_info.file_path)
+        content = file_data.decode('utf-8', errors='ignore')
+
+        # Extract URLs: matches any http/https URL
+        # This regex captures typical URLs and also handles trailing backslashes
+        urls = re.findall(r'https?://[^\s]+', content)
+        # Clean up: remove trailing backslashes, quotes, etc.
+        cleaned_urls = []
+        for url in urls:
+            # Remove trailing backslash if present
+            url = url.rstrip('\\')
+            # Remove any trailing punctuation (like . or ,) but keep the URL
+            url = url.rstrip('.,;:')
+            # Ensure it's a valid URL
+            if url.startswith(('http://', 'https://')):
+                cleaned_urls.append(url)
+
+        # Remove duplicates
+        cleaned_urls = list(dict.fromkeys(cleaned_urls))
+
+        if not cleaned_urls:
+            bot.edit_message_text("❌ No valid URLs found in the file.", message.chat.id, status_msg.message_id)
+            return
+
+        # Write cleaned URLs to a new file
+        filename = "cleaned_sites.txt"
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write("\n".join(cleaned_urls))
+
+        with open(filename, 'rb') as f:
+            bot.send_document(
+                message.chat.id,
+                f,
+                caption=f"✅ Extracted {len(cleaned_urls)} site URLs.\n\nYou can now upload this file via /addurls."
+            )
+        os.remove(filename)
+        bot.delete_message(message.chat.id, status_msg.message_id)
+
+    except Exception as e:
+        bot.reply_to(message, f"❌ Error: {str(e)}")
 
 
 def test_proxy_quick_connect(proxy):
@@ -1749,6 +1807,7 @@ def show_owner_callback(call):
 • <code>/rsite &lt;url&gt;</code> – Remove a site
 • <code>/rmsites</code> – Remove all sites
 • <code>/viewsites</code> – List all sites
+• <code>/cleanfile</code> – Clean sites from .txt file
 
 <b>🛡️ PROXY MANAGEMENT</b>
 • <code>/addpro ip:port:user:pass</code> – Add single proxy
