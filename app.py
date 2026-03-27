@@ -9,7 +9,8 @@ from telebot import types
 from datetime import datetime, timedelta
 import threading
 import functools
-import uuid 
+import uuid
+import html
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import socket
@@ -1375,42 +1376,211 @@ def get_filtered_sites():
     except:
         return sites_data['sites']
 
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+# Put your CryptoBot API Token here!
+CRYPTO_BOT_TOKEN = "557807:AA4641NI4yVxQBXTrX7sg6X79O7Qqo5w741" 
+ADMIN_USERNAME = "Unknown_bolte" # Do not include the @
+
+def create_crypto_invoice(amount, currency="USDT", description=""):
+    """Talks to CryptoBot API to generate a fresh payment link"""
+    url = "https://pay.crypt.bot/api/createInvoice"
+    headers = {"Crypto-Pay-API-Token": CRYPTO_BOT_TOKEN}
+    payload = {"asset": currency, "amount": amount, "description": description}
+    try:
+        response = requests.post(url, headers=headers, data=payload)
+        data = response.json()
+        if data["ok"]:
+            return data["result"]["pay_url"] 
+    except Exception as e:
+        print(f"Error creating invoice: {e}")
+    return None
+
+# ============================================================================
+# START MENU WITH ANIMATION
+# ============================================================================
 @bot.message_handler(commands=['start'])
 @flood_control
 @check_access
 def send_welcome(message):
     user_name = message.from_user.first_name or "User"
+    chat_id = message.chat.id
 
+    # The cool loading animation sequence
+    msg = bot.send_message(chat_id, "<i>⏳ Booting NOVA system...</i>", parse_mode='HTML')
+    time.sleep(0.5)
+    bot.edit_message_text("<i>🔐 Connecting to secure servers... [██░░░░░░░░] 20%</i>", chat_id, msg.message_id, parse_mode='HTML')
+    time.sleep(0.5)
+    bot.edit_message_text("<i>⚡ Loading modules... [██████░░░░] 60%</i>", chat_id, msg.message_id, parse_mode='HTML')
+    time.sleep(0.5)
+    bot.edit_message_text("<i>✅ Connection established. [██████████] 100%</i>", chat_id, msg.message_id, parse_mode='HTML')
+    time.sleep(0.4)
+
+    # Main Menu Construction
     markup = types.InlineKeyboardMarkup(row_width=2)
     buttons = [
-        types.InlineKeyboardButton("📖 Help", callback_data="show_help"),
-        types.InlineKeyboardButton("ℹ️ Info", callback_data="show_info"),
-        types.InlineKeyboardButton("🔄 Check Subscription", callback_data="check_subscription")
+        types.InlineKeyboardButton("💳 Access Plans", callback_data="show_plans"),
+        types.InlineKeyboardButton("ℹ️ Account Info", callback_data="show_info"),
+        types.InlineKeyboardButton("📖 Help & Rules", callback_data="show_help"),
+        types.InlineKeyboardButton("🔄 Refresh UI", callback_data="back_to_start")
     ]
-    if is_owner(message.from_user.id):
-        buttons.append(types.InlineKeyboardButton("👑 Owner Commands", callback_data="show_owner"))
-
-    # Add buttons in rows of 2
+    
     for i in range(0, len(buttons), 2):
         markup.row(*buttons[i:i+2])
 
+    if is_owner(message.from_user.id):
+        markup.add(types.InlineKeyboardButton("👑 Owner Panel", callback_data="show_owner"))
+
     welcome_text = f"""
 ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃      🔥 𝐍𝐎𝐕𝐀 𝐂𝐂 𝐂𝐇𝐄𝐂𝐊𝐄𝐑 🔥     ┃
+┃      🔥 𝐍𝐎𝐕𝐀 𝐂𝐂 𝐂𝐇𝐄𝐂𝐊𝐄𝐑 🔥      ┃
 ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 
-Welcome, {user_name}!
+👋 <b>Welcome, {html.escape(user_name)}!</b>
 
-Use the buttons below to explore bot features.
+Your ultimate gateway for fast and reliable checking.
+Select an option below to begin.
+"""
+    bot.edit_message_text(welcome_text, chat_id, msg.message_id, parse_mode='HTML', reply_markup=markup)
+
+
+# ============================================================================
+# CALLBACKS: PLANS & PAYMENTS
+# ============================================================================
+@bot.callback_query_handler(func=lambda call: call.data == "show_plans")
+def show_plans_callback(call):
+    plans_text = """
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃     ⚡ <b>𝐀𝐕𝐀𝐈𝐋𝐀𝐁𝐋𝐄 𝐏𝐋𝐀𝐍𝐒</b> ⚡     ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+🔹 <b>Trial Access</b> — 7 days · <code>$7</code>
+  └ <i>Unlimited checks until plan ends</i>
+
+🔹 <b>Elite Access</b> — 15 days · <code>$14</code>
+  └ <i>Unlimited checks until plan ends</i>
+
+🔹 <b>Pro Access</b> — 30 days · <code>$20</code>
+  └ <i>Unlimited checks until plan ends</i>
+
+🔹 <b>Quarterly Access</b> — 90 days · <code>$50</code>
+  └ <i>Unlimited checks until plan ends</i>
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+<i>Choose a plan below to pay securely via @CryptoBot.</i>
+"""
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        types.InlineKeyboardButton("🛒 Buy Trial ($7)", callback_data="buy_trial"),
+        types.InlineKeyboardButton("🛒 Buy Elite ($14)", callback_data="buy_elite")
+    )
+    markup.add(
+        types.InlineKeyboardButton("🛒 Buy Pro ($20)", callback_data="buy_pro"),
+        types.InlineKeyboardButton("🛒 Buy Qtr ($50)", callback_data="buy_qtr")
+    )
+    markup.add(types.InlineKeyboardButton("👨‍💻 Contact Admin", url=f"https://t.me/{ADMIN_USERNAME}")) 
+    markup.add(types.InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_start"))
+
+    try:
+        bot.edit_message_text(plans_text, call.message.chat.id, call.message.message_id, parse_mode='HTML', reply_markup=markup)
+    except Exception:
+        bot.send_message(call.message.chat.id, plans_text, parse_mode='HTML', reply_markup=markup)
+    bot.answer_callback_query(call.id)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("buy_"))
+def process_buy_click(call):
+    bot.answer_callback_query(call.id, "Generating secure invoice...", show_alert=False)
+    
+    if call.data == "buy_trial": price, plan_name = 7, "Trial Access (7 Days)"
+    elif call.data == "buy_elite": price, plan_name = 14, "Elite Access (15 Days)"
+    elif call.data == "buy_pro": price, plan_name = 20, "Pro Access (30 Days)"
+    elif call.data == "buy_qtr": price, plan_name = 50, "Quarterly Access (90 Days)"
+        
+    pay_url = create_crypto_invoice(amount=price, currency="USDT", description=f"Nova CC Checker: {plan_name}")
+    
+    if pay_url:
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton(f"💸 Pay ${price} via @CryptoBot", url=pay_url))
+        markup.add(types.InlineKeyboardButton("🔙 Cancel", callback_data="show_plans"))
+        
+        invoice_text = f"🧾 <b>Secure Invoice Generated</b>\n\n<b>🛒 Item:</b> {plan_name}\n<b>💰 Amount:</b> ${price} USDT\n\n<i>Click the button below to pay. Access is granted instantly upon confirmation.</i>"
+        bot.edit_message_text(invoice_text, call.message.chat.id, call.message.message_id, parse_mode='HTML', reply_markup=markup)
+    else:
+        bot.answer_callback_query(call.id, "❌ Error generating invoice. Contact Admin.", show_alert=True)
+
+# ============================================================================
+# CALLBACKS: USER INFO (VIP vs NON-VIP STYLING)
+# ============================================================================
+@bot.callback_query_handler(func=lambda call: call.data == "show_info")
+def show_info_callback(call):
+    user_id = call.from_user.id
+    user_str = str(user_id)
+    is_owner_flag = is_owner(user_id)
+
+    if is_owner_flag:
+        info = f"""
+┏━━━━━━━⍟
+┃ 👑 <b>GOD MODE ENGAGED</b>
+┗━━━━━━━━━━━⊛
+
+🆔 <b>User ID:</b> <code>{html.escape(user_str)}</code>
+💠 <b>Status:</b> 🌌 Supreme Overlord
+♾️ <b>Access:</b> Infinite limits. No restrictions.
+"""
+    elif user_str in users_data:
+        data = users_data[user_str]
+        expiry = datetime.fromisoformat(data['expiry'])
+        days_left = (expiry - datetime.now()).days
+        limit = data.get('limit', 1000)
+        daily_used = data.get('usage_today', 0)
+        daily_limit = data.get('daily_limit', 10000)
+        
+        # Premium VIP Look
+        info = f"""
+┏━━━━━━━⍟
+┃ 💎 <b>VIP ACCOUNT INFO</b>
+┗━━━━━━━━━━━⊛
+
+🆔 <b>User ID:</b> <code>{html.escape(user_str)}</code>
+🎖️ <b>Status:</b> ✨ Active Premium Member ✨
+⏳ <b>Time Remaining:</b> {days_left} Days ({expiry.strftime('%Y-%m-%d')})
+🚀 <b>Upload Power:</b> {limit} CCs per batch
+📈 <b>Daily Capacity:</b> {daily_used} / {daily_limit} used
+"""
+    else:
+        # Non-Premium "Scrub" Look
+        info = f"""
+┏━━━━━━━⍟
+┃ 🪫 <b>BASIC ACCOUNT INFO</b>
+┗━━━━━━━━━━━⊛
+
+🆔 <b>User ID:</b> <code>{html.escape(user_str)}</code>
+🧱 <b>Status:</b> ❌ Unregistered / Free User
+🔒 <b>Access:</b> Denied. You need a subscription to run checks.
+
+<i>Hit the "Access Plans" button to upgrade your account!</i>
 """
 
-    bot.reply_to(message, welcome_text, parse_mode='HTML', reply_markup=markup)
-import html
+    try:
+        bot.edit_message_text(
+            info,
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            parse_mode='HTML',
+            reply_markup=types.InlineKeyboardMarkup().add(
+                types.InlineKeyboardButton("🔙 Back", callback_data="back_to_start")
+            )
+        )
+    except Exception:
+        bot.send_message(call.message.chat.id, info, parse_mode='HTML')
+    bot.answer_callback_query(call.id)
+
 
 # ============================================================================
-# START MENU BUTTON CALLBACKS (with safe HTML)
+# CALLBACKS: HELP & OWNER
 # ============================================================================
-
 @bot.callback_query_handler(func=lambda call: call.data == "show_help")
 def show_help_callback(call):
     help_text = """
@@ -1459,63 +1629,14 @@ def show_help_callback(call):
                 types.InlineKeyboardButton("🔙 Back", callback_data="back_to_start")
             )
         )
-    except Exception as e:
-        # If editing fails, send as new message
+    except Exception:
         bot.send_message(call.message.chat.id, help_text, parse_mode='HTML')
     bot.answer_callback_query(call.id)
-
-@bot.callback_query_handler(func=lambda call: call.data == "show_info")
-def show_info_callback(call):
-    user_id = call.from_user.id
-    user_str = str(user_id)
-    is_owner_flag = is_owner(user_id)
-
-    if is_owner_flag:
-        info = f"""
-┏━━━━━━━⍟
-┃ <b>👤 OWNER INFO</b>
-┗━━━━━━━━━━━⊛
-
-🆔 <b>User ID:</b> <code>{html.escape(user_str)}</code>
-🔰 <b>Role:</b> 👑 Owner (unlimited access)
-"""
-    elif user_str in users_data:
-        data = users_data[user_str]
-        expiry = datetime.fromisoformat(data['expiry'])
-        days_left = (expiry - datetime.now()).days
-        limit = data.get('limit', 1000)
-        daily_used = data.get('usage_today', 0)
-        daily_limit = data.get('daily_limit', 10000)
-        info = f"""
-┏━━━━━━━⍟
-┃ <b>👤 USER INFO</b>
-┗━━━━━━━━━━━⊛
-
-🆔 <b>User ID:</b> <code>{html.escape(user_str)}</code>
-⏳ <b>Expires:</b> {expiry.strftime('%Y-%m-%d %H:%M:%S')} ({days_left} days left)
-📊 <b>Per‑upload limit:</b> {limit}
-📈 <b>Daily usage:</b> {daily_used}/{daily_limit}
-🔰 <b>Role:</b> Premium
-"""
-    else:
-        info = "❌ You are not approved."
-
-    # Send as a new message to avoid editing issues
-    bot.send_message(
-        call.message.chat.id,
-        info,
-        parse_mode='HTML',
-        reply_markup=types.InlineKeyboardMarkup().add(
-            types.InlineKeyboardButton("🔙 Back", callback_data="back_to_start")
-        )
-    )
-    bot.answer_callback_query(call.id)
-
 
 @bot.callback_query_handler(func=lambda call: call.data == "show_owner")
 def show_owner_callback(call):
     if not is_owner(call.from_user.id):
-        bot.answer_callback_query(call.id, "🚫 Owner only.", show_alert=True)
+        bot.answer_callback_query(call.id, "🚫 Restricted: Supreme Overlords Only.", show_alert=True)
         return
     owner_text = """
 <b>🔥 OWNER COMMANDS 🔥</b>
@@ -1576,28 +1697,33 @@ def show_owner_callback(call):
         bot.send_message(call.message.chat.id, owner_text, parse_mode='HTML')
     bot.answer_callback_query(call.id)
 
+# ============================================================================
+# CALLBACKS: RETURN TO MAIN MENU
+# ============================================================================
 @bot.callback_query_handler(func=lambda call: call.data == "back_to_start")
 def back_to_start_callback(call):
     markup = types.InlineKeyboardMarkup(row_width=2)
     buttons = [
-        types.InlineKeyboardButton("📖 Help", callback_data="show_help"),
-        types.InlineKeyboardButton("ℹ️ Info", callback_data="show_info"),
-        types.InlineKeyboardButton("🔄 Check Subscription", callback_data="check_subscription")
+        types.InlineKeyboardButton("💳 Access Plans", callback_data="show_plans"),
+        types.InlineKeyboardButton("ℹ️ Account Info", callback_data="show_info"),
+        types.InlineKeyboardButton("📖 Help & Rules", callback_data="show_help"),
+        types.InlineKeyboardButton("🔄 Refresh UI", callback_data="back_to_start")
     ]
-    if is_owner(call.from_user.id):
-        buttons.append(types.InlineKeyboardButton("👑 Owner Commands", callback_data="show_owner"))
-
+    
     for i in range(0, len(buttons), 2):
         markup.row(*buttons[i:i+2])
 
-    welcome_text = f"""
+    if is_owner(call.from_user.id):
+        markup.add(types.InlineKeyboardButton("👑 Owner Panel", callback_data="show_owner"))
+
+    welcome_text = """
 ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃      🔥 𝐍𝐎𝐕𝐀 𝐂𝐂 𝐂𝐇𝐄𝐂𝐊𝐄𝐑 🔥     ┃
+┃      🔥 𝐍𝐎𝐕𝐀 𝐂𝐂 𝐂𝐇𝐄𝐂𝐊𝐄𝐑 🔥      ┃
 ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 
-Welcome back!
+🏠 <b>Main Menu</b>
 
-Use the buttons below.
+Select an option below to begin.
 """
     try:
         bot.edit_message_text(
@@ -1611,102 +1737,23 @@ Use the buttons below.
         bot.send_message(call.message.chat.id, welcome_text, parse_mode='HTML', reply_markup=markup)
     bot.answer_callback_query(call.id)
 
+# ============================================================================
+# STANDARD COMMAND HANDLERS
+# ============================================================================
 @bot.message_handler(commands=['help'])
 @flood_control
 @check_access
 def send_help(message):
-    help_text = """
-<b>🔰 QUICK START</b>
-• Add proxies: <code>/addpro ip:port:user:pass</code> or upload a <code>.txt</code> file.
-• Upload cards: <code>.txt</code> file with one card per line (<code>CC|MM|YYYY|CVV</code>).
-• Choose gate from the buttons after upload.
-
-<b>🌐 PROXY COMMANDS</b>
-• <code>/addpro ip:port:user:pass</code> – add one proxy
-• Upload <code>.txt</code> file (bulk) – proxies checked live
-• <code>/cleanmyproxies</code> – remove dead personal proxies
-
-<b>💳 CARD COMMANDS</b>
-• <code>/sh CC|MM|YYYY|CVV</code> – single check
-• <code>/pp CC|MM|YYYY|CVV</code> – PayPal Fixed gate
-• <code>/pp2 CC|MM|YYYY|CVV</code> – PayPal General gate
-• <code>/msh</code> – start mass check after file upload
-• <code>/stop</code> – abort current mass check
-
-<b>👤 PERSONAL SITES</b>
-• <code>/addmysite &lt;url&gt;</code> – add a Shopify site for your own use
-• <code>/viewmysites</code> – list your personal sites
-• <code>/clearmysites</code> – remove all your personal sites
-
-<b>📊 LIMITS</b>
-• Per upload: 1000 cards (owners: unlimited)
-• Daily total: 10,000 cards
-
-<b>ℹ️ OTHER</b>
-• <code>/stats</code> – bot statistics (owner only)
-• <code>/ping</code> – check latency
-• <code>/use CODE</code> – redeem trial code
-• <code>/info</code> – see your account details
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-<b>Bot By:</b> <a href="tg://user?id={DARKS_ID}">⏤‌‌Unknownop ꯭𖠌</a>
-"""
-    bot.reply_to(message, help_text, parse_mode='HTML')
+    show_help_callback(type('obj', (object,), {'message': message, 'id': 1, 'data': 'show_help'}))
 
 @bot.message_handler(commands=['owner'])
 @flood_control
 @check_access
 def send_owner_help(message):
     if not is_owner(message.from_user.id):
-        bot.reply_to(message, "🚫 Owner only command.")
+        bot.reply_to(message, "🚫 Restricted: Supreme Overlords Only.")
         return
-    owner_text = """
-<b>🔥 OWNER COMMANDS 🔥</b>
-
-<b>🌐 SITE MANAGEMENT</b>
-• <code>/addurls</code> – Add sites from .txt
-• <code>/splitsite N</code> – Split site list into N parts
-• <code>/listsite</code> – Export sites with summary
-• <code>/cleansites</code> – Remove dead sites
-• <code>/rsite &lt;url&gt;</code> – Remove a site
-• <code>/rmsites</code> – Remove all sites
-• <code>/viewsites</code> – List all sites
-
-<b>🛡️ PROXY MANAGEMENT</b>
-• <code>/addpro ip:port:user:pass</code> – Add single proxy
-• <code>/addproxies</code> – Add proxies from .txt
-• <code>/cleanpro</code> – Remove dead global proxies
-• <code>/rmpro</code> – Remove all proxies
-
-<b>👥 USER MANAGEMENT</b>
-• <code>/pro &lt;userid&gt; &lt;days&gt;</code> – Approve user
-• <code>/limit &lt;userid&gt; &lt;new_limit&gt;</code> – Change per‑upload limit
-• <code>/setlimit &lt;userid&gt; &lt;daily_limit&gt;</code> – Change daily limit
-• <code>/rmuser &lt;userid&gt;</code> – Remove/ban user
-• <code>/grant &lt;chatid&gt;</code> – Approve group
-• <code>/users</code> – List approved users
-
-<b>💰 REDEEM CODES</b>
-• <code>/redeem &lt;days&gt; [count]</code> – Generate trial codes
-
-<b>📊 BOT MANAGEMENT</b>
-• <code>/stats</code> – Show statistics
-• <code>/ping</code> – Check latency
-• <code>/restart</code> – Restart bot
-• <code>/setamo</code> – Set price filter
-• <code>/broadcast</code> – Send announcement
-
-<b>🔧 SINGLE‑CHECK SITES</b>
-• <code>/addsingleurls</code> – Add sites for single check
-• <code>/viewsinglesites</code> – View single sites
-• <code>/rmsinglesite</code> – Remove a single site
-• <code>/cleansinglesites</code> – Clean single sites
-
-<b>📁 FILE SPLITTING</b>
-• <code>/splitfile N</code> – Split any uploaded .txt into N parts
-"""
-    bot.reply_to(message, owner_text, parse_mode='HTML')
-
+    show_owner_callback(type('obj', (object,), {'from_user': message.from_user, 'message': message, 'id': 1, 'data': 'show_owner'}))
 
 @bot.message_handler(commands=['sh' , 's'])
 @bot.message_handler(func=lambda m: m.text and (m.text.startswith('.sh') or m.text.startswith('.s') or m.text.lower().startswith('cook')))
