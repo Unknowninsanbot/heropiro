@@ -850,15 +850,18 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
             # Parse submit response
             try:
                 submit_json = json.loads(text3)
+                # Check for GraphQL errors first
+                if 'errors' in submit_json:
+                    errors = submit_json['errors']
+                    err_msgs = [e.get('message', str(e)) for e in errors[:3]]
+                    return False, f"GraphQL error: {'; '.join(err_msgs)}", gateway, total_price, currency
+
                 submit_result = submit_json.get('data', {}).get('submitForCompletion', {})
                 if not submit_result:
-                    errors = submit_json.get('errors', [])
-                    if errors:
-                        for e in errors:
-                            code = e.get('code')
-                            if code:
-                                return False, code, gateway, total_price, currency
-                    return False, "Empty submit response", gateway, total_price, currency
+                    # If no data and no errors, maybe the mutation doesn't exist or gateway is not supported
+                    # Try to get the receipt from the response if it exists elsewhere (rare)
+                    # Otherwise, return a clear error
+                    return False, "Empty submit response – gateway may not support this mutation", gateway, total_price, currency
 
                 typename = submit_result.get('__typename')
                 if typename in ['SubmitSuccess', 'SubmittedForCompletion', 'SubmitAlreadyAccepted']:
@@ -879,6 +882,10 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                             if code:
                                 return False, code, gateway, total_price, currency
                     return False, "Submit rejected", gateway, total_price, currency
+                elif typename == 'Throttled':
+                    return False, "Throttled", gateway, total_price, currency
+                elif typename == 'CheckpointDenied':
+                    return False, "Checkpoint denied", gateway, total_price, currency
                 else:
                     return False, f"Unknown submit result: {typename}", gateway, total_price, currency
 
@@ -936,7 +943,6 @@ def check_site_shopify_direct(site_url, cc, proxy=None):
         if len(year) == 2:
             year = f"20{year}"
 
-        # Note: product fetch is now inside process_card, no need to fetch here.
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
