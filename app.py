@@ -1385,7 +1385,7 @@ CRYPTO_BOT_TOKEN = "557807:AA4641NI4yVxQBXTrX7sg6X79O7Qqo5w741"
 ADMIN_USERNAME = "Unknown_bolte" # Do not include the @
 
 def create_crypto_invoice(amount, currency="USDT", description=""):
-    """Talks to CryptoBot API to generate a fresh payment link"""
+    """Talks to CryptoBot API to generate a fresh payment link AND invoice ID"""
     url = "https://pay.crypt.bot/api/createInvoice"
     headers = {"Crypto-Pay-API-Token": CRYPTO_BOT_TOKEN}
     payload = {"asset": currency, "amount": amount, "description": description}
@@ -1393,10 +1393,11 @@ def create_crypto_invoice(amount, currency="USDT", description=""):
         response = requests.post(url, headers=headers, data=payload)
         data = response.json()
         if data["ok"]:
-            return data["result"]["pay_url"] 
+            # We now return BOTH the link and the unique ID
+            return data["result"]["pay_url"], data["result"]["invoice_id"]
     except Exception as e:
         print(f"Error creating invoice: {e}")
-    return None
+    return None, None
 
 # ============================================================================
 # START MENU WITH ANIMATION
@@ -1493,23 +1494,88 @@ def show_plans_callback(call):
 def process_buy_click(call):
     bot.answer_callback_query(call.id, "Generating secure invoice...", show_alert=False)
     
-    if call.data == "buy_trial": price, plan_name = 7, "Trial Access (7 Days)"
-    elif call.data == "buy_elite": price, plan_name = 14, "Elite Access (15 Days)"
-    elif call.data == "buy_pro": price, plan_name = 20, "Pro Access (30 Days)"
-    elif call.data == "buy_qtr": price, plan_name = 50, "Quarterly Access (90 Days)"
+    # Define plan details
+    if call.data == "buy_trial": price, days, plan_name = 7, 7, "Trial Access"
+    elif call.data == "buy_elite": price, days, plan_name = 14, 15, "Elite Access"
+    elif call.data == "buy_pro": price, days, plan_name = 20, 30, "Pro Access"
+    elif call.data == "buy_qtr": price, days, plan_name = 50, 90, "Quarterly Access"
         
-    pay_url = create_crypto_invoice(amount=price, currency="USDT", description=f"Nova CC Checker: {plan_name}")
+    pay_url, invoice_id = create_crypto_invoice(amount=price, currency="USDT", description=f"Nova CC: {plan_name}")
     
-    if pay_url:
+    if pay_url and invoice_id:
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton(f"💸 Pay ${price} via @CryptoBot", url=pay_url))
+        
+        # THIS IS THE MAGIC BUTTON. It holds the ID and the Days!
+        markup.add(types.InlineKeyboardButton("🔄 I have paid (Verify)", callback_data=f"verify_{invoice_id}_{days}"))
         markup.add(types.InlineKeyboardButton("🔙 Cancel", callback_data="show_plans"))
         
-        invoice_text = f"🧾 <b>Secure Invoice Generated</b>\n\n<b>🛒 Item:</b> {plan_name}\n<b>💰 Amount:</b> ${price} USDT\n\n<i>Click the button below to pay. Access is granted instantly upon confirmation.</i>"
+        invoice_text = f"🧾 <b>Secure Invoice Generated</b>\n\n<b>🛒 Item:</b> {plan_name} ({days} Days)\n<b>💰 Amount:</b> ${price} USDT\n\n<i>1. Click Pay via @CryptoBot\n2. Complete the transaction\n3. Click 'I have paid' to get instant access.</i>"
+        
         bot.edit_message_text(invoice_text, call.message.chat.id, call.message.message_id, parse_mode='HTML', reply_markup=markup)
     else:
         bot.answer_callback_query(call.id, "❌ Error generating invoice. Contact Admin.", show_alert=True)
 
+
+# ============================================================================
+# AUTOMATED PAYMENT CHECKER
+# ============================================================================
+@bot.callback_query_handler(func=lambda call: call.data.startswith("verify_"))
+def verify_payment_callback(call):
+    # Extract the invoice ID and the days from the button data
+    _, invoice_id, plan_days = call.data.split("_")
+    plan_days = int(plan_days)
+    user_id = call.from_user.id
+    
+    # Let the user know we are checking
+    bot.answer_callback_query(call.id, "🔄 Checking blockchain for payment...", show_alert=False)
+
+    # Ask CryptoBot for the status of this specific invoice
+    url = f"https://pay.crypt.bot/api/getInvoices?invoice_ids={invoice_id}"
+    headers = {"Crypto-Pay-API-Token": CRYPTO_BOT_TOKEN}
+    
+    try:
+        response = requests.get(url, headers=headers)
+        data = response.json()
+
+        if data["ok"] and len(data["result"]["items"]) > 0:
+            invoice_status = data["result"]["items"][0]["status"]
+
+            if invoice_status == "paid":
+                # --- THIS IS WHERE PHASE 2 (MONGODB) WILL GO ---
+                # We will write the code to add them to the database here next!
+                
+                success_text = f"""
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ 🎉 <b>𝐏𝐀𝐘𝐌𝐄𝐍𝐓 𝐒𝐔𝐂𝐂𝐄𝐒𝐒𝐅𝐔𝐋</b> 🎉 ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+✅ <b>Invoice:</b> #{invoice_id}
+💎 <b>Status:</b> Account Upgraded!
+⏳ <b>Time Added:</b> {plan_days} Days
+
+<i>Welcome to the VIP club. You can now use all bot features. Type /start to refresh your menu!</i>
+"""             
+                markup = types.InlineKeyboardMarkup()
+                markup.add(types.InlineKeyboardButton("🏠 Go to Main Menu", callback_data="back_to_start"))
+                
+                bot.edit_message_text(success_text, call.message.chat.id, call.message.message_id, parse_mode='HTML', reply_markup=markup)
+                
+                # Optional: Send a notification to YOU (the owner) that someone bought a plan!
+                # bot.send_message(YOUR_ADMIN_ID, f"💰 <b>NEW SALE!</b>\nUser {user_id} just bought a {plan_days} day plan!", parse_mode='HTML')
+
+            elif invoice_status == "active":
+                bot.answer_callback_query(call.id, "⏳ Payment not detected yet. If you just paid, please wait 30 seconds and click again.", show_alert=True)
+            elif invoice_status == "expired":
+                bot.answer_callback_query(call.id, "❌ This invoice has expired. Please generate a new one.", show_alert=True)
+            else:
+                bot.answer_callback_query(call.id, f"⚠️ Status: {invoice_status}. Try again in a moment.", show_alert=True)
+        else:
+            bot.answer_callback_query(call.id, "❌ Invoice not found in the system.", show_alert=True)
+
+    except Exception as e:
+        print(f"Verify API Error: {e}")
+        bot.answer_callback_query(call.id, "❌ API connection error. Please try again.", show_alert=True)
 # ============================================================================
 # CALLBACKS: USER INFO (VIP vs NON-VIP STYLING)
 # ============================================================================
