@@ -1518,16 +1518,20 @@ def process_buy_click(call):
 
 
 # ============================================================================
-# AUTOMATED PAYMENT CHECKER
+# AUTOMATED PAYMENT CHECKER (Using Existing DB Architecture)
 # ============================================================================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("verify_"))
 def verify_payment_callback(call):
     # Extract the invoice ID and the days from the button data
-    _, invoice_id, plan_days = call.data.split("_")
-    plan_days = int(plan_days)
-    user_id = call.from_user.id
+    try:
+        _, invoice_id, plan_days = call.data.split("_")
+        plan_days = int(plan_days)
+    except ValueError:
+        bot.answer_callback_query(call.id, "❌ Invalid button data.", show_alert=True)
+        return
+
+    user_id = str(call.from_user.id)
     
-    # Let the user know we are checking
     bot.answer_callback_query(call.id, "🔄 Checking blockchain for payment...", show_alert=False)
 
     # Ask CryptoBot for the status of this specific invoice
@@ -1542,8 +1546,34 @@ def verify_payment_callback(call):
             invoice_status = data["result"]["items"][0]["status"]
 
             if invoice_status == "paid":
-                # --- THIS IS WHERE PHASE 2 (MONGODB) WILL GO ---
-                # We will write the code to add them to the database here next!
+                # --- APPLY THE UPGRADE USING YOUR EXISTING DB SYSTEM ---
+                now = datetime.now()
+                
+                # Check if they already exist and have active time
+                if user_id in users_data and 'expiry' in users_data[user_id]:
+                    current_expiry = datetime.fromisoformat(users_data[user_id]['expiry'])
+                    if current_expiry > now:
+                        new_expiry = current_expiry + timedelta(days=plan_days)
+                    else:
+                        new_expiry = now + timedelta(days=plan_days)
+                    
+                    # Update existing user while keeping their usage stats
+                    users_data[user_id]['expiry'] = new_expiry.isoformat()
+                    users_data[user_id]['limit'] = 1000       # Batch Limit
+                    users_data[user_id]['daily_limit'] = 10000 # Daily Limit
+                else:
+                    # Create brand new user
+                    new_expiry = now + timedelta(days=plan_days)
+                    users_data[user_id] = {
+                        "expiry": new_expiry.isoformat(),
+                        "limit": 1000,
+                        "usage_today": 0,
+                        "last_check_date": now.strftime('%Y-%m-%d'),
+                        "daily_limit": 10000
+                    }
+                
+                # SAVE IT TO MONGODB USING YOUR FUNCTION
+                save_json(USERS_FILE, users_data)
                 
                 success_text = f"""
 ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
@@ -1553,6 +1583,7 @@ def verify_payment_callback(call):
 ✅ <b>Invoice:</b> #{invoice_id}
 💎 <b>Status:</b> Account Upgraded!
 ⏳ <b>Time Added:</b> {plan_days} Days
+📅 <b>New Expiry:</b> {new_expiry.strftime('%Y-%m-%d')}
 
 <i>Welcome to the VIP club. You can now use all bot features. Type /start to refresh your menu!</i>
 """             
@@ -1561,8 +1592,11 @@ def verify_payment_callback(call):
                 
                 bot.edit_message_text(success_text, call.message.chat.id, call.message.message_id, parse_mode='HTML', reply_markup=markup)
                 
-                # Optional: Send a notification to YOU (the owner) that someone bought a plan!
-                # bot.send_message(YOUR_ADMIN_ID, f"💰 <b>NEW SALE!</b>\nUser {user_id} just bought a {plan_days} day plan!", parse_mode='HTML')
+                # Optional: Send a notification to YOU
+                try:
+                    bot.send_message(DARKS_ID, f"💰 <b>NEW SALE!</b>\nUser <code>{user_id}</code> bought a {plan_days} day plan!", parse_mode='HTML')
+                except Exception:
+                    pass
 
             elif invoice_status == "active":
                 bot.answer_callback_query(call.id, "⏳ Payment not detected yet. If you just paid, please wait 30 seconds and click again.", show_alert=True)
