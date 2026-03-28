@@ -28,7 +28,7 @@ import logging
 logger = logging.getLogger(__name__)
 from complete_handler import setup_complete_handler, get_bin_info
 from shopify_checker import check_site_shopify_direct, process_response_shopify
-from gates import check_paypal_fixed, check_paypal_general, PAYPAL_AMOUNT, check_stripe_api
+from gates import check_paypal_fixed, check_paypal_general, check_stripe_api
 
 from gates import (
     check_razorpay, check_braintree, check_paypal_onyx, check_sk_gateway,
