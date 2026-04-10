@@ -1,5 +1,5 @@
 # complete_handler.py – PREMIUM EDITION
-# Fast stop, external Shopify API, per‑gate limits, premium UI
+# Fast stop, external Shopify API, per‑gate limits, premium UI, 30 concurrent checks
 
 import requests
 import time
@@ -89,20 +89,27 @@ def is_stop_requested(chat_id):
         return stop_events.get(chat_id, False)
 
 # ============================================================================
-# CONCURRENCY CONTROL
+# CONCURRENCY CONTROL – 30 SIMULTANEOUS CHECKS
 # ============================================================================
 user_busy = {}
 user_busy_lock = threading.Lock()
+BUSY_TIMEOUT = 600      # 10 minutes auto‑release
 
 def is_user_busy(user_id):
     with user_busy_lock:
-        return user_busy.get(user_id, False)
+        entry = user_busy.get(user_id)
+        if not entry:
+            return False
+        if entry['busy'] and time.time() - entry['since'] > BUSY_TIMEOUT:
+            user_busy[user_id] = {'busy': False, 'since': 0}
+            return False
+        return entry['busy']
 
 def set_user_busy(user_id, busy):
     with user_busy_lock:
-        user_busy[user_id] = busy
+        user_busy[user_id] = {'busy': busy, 'since': time.time() if busy else 0}
 
-MAX_CONCURRENT_CHECKS = 3
+MAX_CONCURRENT_CHECKS = 30
 mass_check_semaphore = threading.Semaphore(MAX_CONCURRENT_CHECKS)
 
 # ============================================================================
@@ -447,7 +454,7 @@ def process_shopify_mass_check(bot, message, start_msg, ccs, site_list, proxies,
     last_update_time = time.time()
     last_card_result = ""
 
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    with ThreadPoolExecutor(max_workers=30) as executor:
         futures = {}
         for i, cc in enumerate(ccs):
             if is_stop_requested(chat_id):
@@ -543,44 +550,32 @@ def process_shopify_mass_check(bot, message, start_msg, ccs, site_list, proxies,
     except:
         safe_send(bot.send_message, chat_id, final_text, parse_mode="HTML")
 
-    # Send cooked cards
     if results['cooked']:
         cooked_text = "\n".join([f"{r['cc']} | {r['response']}" for r in results['cooked']])
         filename = f"cooked_{chat_id}.txt"
-        with open(filename, 'w') as f:
-            f.write(cooked_text)
-        with open(filename, 'rb') as f:
-            safe_send(bot.send_document, chat_id, f, caption="🔥 Cooked cards")
+        with open(filename, 'w') as f: f.write(cooked_text)
+        with open(filename, 'rb') as f: safe_send(bot.send_document, chat_id, f, caption="🔥 Cooked cards")
         os.remove(filename)
 
-    # Send approved cards
     if results['approved']:
         approved_text = "\n".join([f"{r['cc']} | {r['response']}" for r in results['approved']])
         filename = f"approved_{chat_id}.txt"
-        with open(filename, 'w') as f:
-            f.write(approved_text)
-        with open(filename, 'rb') as f:
-            safe_send(bot.send_document, chat_id, f, caption="✅ Approved cards (OTP)")
+        with open(filename, 'w') as f: f.write(approved_text)
+        with open(filename, 'rb') as f: safe_send(bot.send_document, chat_id, f, caption="✅ Approved cards (OTP)")
         os.remove(filename)
 
-    # Send unchecked cards (if stopped early)
     if unchecked_ccs:
         unchecked_text = "\n".join(unchecked_ccs)
         filename = f"unchecked_{chat_id}.txt"
-        with open(filename, 'w') as f:
-            f.write(unchecked_text)
-        with open(filename, 'rb') as f:
-            safe_send(bot.send_document, chat_id, f, caption="📋 Unchecked cards (stopped early)")
+        with open(filename, 'w') as f: f.write(unchecked_text)
+        with open(filename, 'rb') as f: safe_send(bot.send_document, chat_id, f, caption="📋 Unchecked cards (stopped early)")
         os.remove(filename)
 
-    # Send error cards (if any and not stopped)
     if results['error'] and not is_stop_requested(chat_id):
         error_text = "\n".join([f"{r['cc']} | {r['response']}" for r in results['error']])
         filename = f"errors_{chat_id}.txt"
-        with open(filename, 'w') as f:
-            f.write(error_text)
-        with open(filename, 'rb') as f:
-            safe_send(bot.send_document, chat_id, f, caption="⚠️ Error cards")
+        with open(filename, 'w') as f: f.write(error_text)
+        with open(filename, 'rb') as f: safe_send(bot.send_document, chat_id, f, caption="⚠️ Error cards")
         os.remove(filename)
 
 
@@ -611,7 +606,7 @@ def process_gate_mass_check(bot, message, start_msg, ccs, gate_func, gate_name,
             except Exception as e:
                 return cc, str(e), "ERROR"
 
-        with ThreadPoolExecutor(max_workers=5) as executor:
+        with ThreadPoolExecutor(max_workers=30) as executor:
             futures = {}
             for i, cc in enumerate(ccs):
                 if is_stop_requested(chat_id):
@@ -699,28 +694,22 @@ def process_gate_mass_check(bot, message, start_msg, ccs, gate_func, gate_name,
         if results['approved']:
             approved_text = "\n".join([f"{cc} | {msg}" for cc, msg in results['approved']])
             filename = f"approved_{chat_id}.txt"
-            with open(filename, 'w') as f:
-                f.write(approved_text)
-            with open(filename, 'rb') as f:
-                safe_send(bot.send_document, chat_id, f, caption="✅ Approved cards")
+            with open(filename, 'w') as f: f.write(approved_text)
+            with open(filename, 'rb') as f: safe_send(bot.send_document, chat_id, f, caption="✅ Approved cards")
             os.remove(filename)
 
         if unchecked_ccs:
             unchecked_text = "\n".join(unchecked_ccs)
             filename = f"unchecked_{chat_id}.txt"
-            with open(filename, 'w') as f:
-                f.write(unchecked_text)
-            with open(filename, 'rb') as f:
-                safe_send(bot.send_document, chat_id, f, caption="📋 Unchecked cards (stopped early)")
+            with open(filename, 'w') as f: f.write(unchecked_text)
+            with open(filename, 'rb') as f: safe_send(bot.send_document, chat_id, f, caption="📋 Unchecked cards (stopped early)")
             os.remove(filename)
 
         if results['error'] and not is_stop_requested(chat_id):
             error_text = "\n".join([f"{cc} | {msg}" for cc, msg in results['error']])
             filename = f"errors_{chat_id}.txt"
-            with open(filename, 'w') as f:
-                f.write(error_text)
-            with open(filename, 'rb') as f:
-                safe_send(bot.send_document, chat_id, f, caption="⚠️ Error cards")
+            with open(filename, 'w') as f: f.write(error_text)
+            with open(filename, 'rb') as f: safe_send(bot.send_document, chat_id, f, caption="⚠️ Error cards")
             os.remove(filename)
 
     except Exception as e:
@@ -1004,6 +993,7 @@ def setup_complete_handler(bot, get_filtered_sites_func, proxies_data,
 
     @bot.callback_query_handler(func=lambda call: call.data == "run_mass_shopify")
     def callback_shopify(call):
+        bot.answer_callback_query(call.id)
         user_id = call.from_user.id
         if not is_user_allowed_func(user_id):
             safe_send(bot.answer_callback_query, call.id, "🚫 Access Denied!", show_alert=True)
@@ -1037,12 +1027,12 @@ def setup_complete_handler(bot, get_filtered_sites_func, proxies_data,
 
     @bot.callback_query_handler(func=lambda call: call.data.startswith("shopify_pref_"))
     def shopify_pref_callback(call):
+        bot.answer_callback_query(call.id)
         user_id = call.from_user.id
         pref = call.data.replace("shopify_pref_", "")
         if user_id not in user_sessions:
             user_sessions[user_id] = {}
         user_sessions[user_id]['hit_pref'] = pref
-        safe_send(bot.answer_callback_query, call.id, f"Preference: {pref}")
         sites = get_filtered_sites_func()
         if not sites:
             safe_send(bot.send_message, call.message.chat.id, "❌ No sites available!")
@@ -1079,6 +1069,7 @@ def setup_complete_handler(bot, get_filtered_sites_func, proxies_data,
 
     @bot.callback_query_handler(func=lambda call: call.data == "run_mass_mysites")
     def callback_mysites(call):
+        bot.answer_callback_query(call.id)
         user_id = call.from_user.id
         if not is_user_allowed_func(user_id):
             safe_send(bot.answer_callback_query, call.id, "🚫 Access Denied!", show_alert=True)
@@ -1101,6 +1092,7 @@ def setup_complete_handler(bot, get_filtered_sites_func, proxies_data,
 
     @bot.callback_query_handler(func=lambda call: call.data.startswith("mysites_pref_"))
     def mysites_pref_callback(call):
+        bot.answer_callback_query(call.id)
         user_id = call.from_user.id
         pref = call.data.replace("mysites_pref_", "")
         user_sites = user_sessions.get(user_id, {}).get('personal_sites', [])
@@ -1161,6 +1153,7 @@ def setup_complete_handler(bot, get_filtered_sites_func, proxies_data,
     for gate_key, (gate_func, gate_name) in gate_map.items():
         @bot.callback_query_handler(func=lambda call, gk=gate_key, gf=gate_func, gn=gate_name: call.data == f"run_mass_{gk}")
         def gate_callback(call, gate_key=gate_key, gate_func=gate_func, gate_name=gate_name):
+            bot.answer_callback_query(call.id)
             user_id = call.from_user.id
             if not is_user_allowed_func(user_id):
                 safe_send(bot.answer_callback_query, call.id, "🚫 Access Denied!", show_alert=True)
@@ -1214,10 +1207,11 @@ def setup_complete_handler(bot, get_filtered_sites_func, proxies_data,
 
     @bot.callback_query_handler(func=lambda call: call.data == "action_cancel")
     def callback_cancel(call):
+        bot.answer_callback_query(call.id)
         try: safe_send(bot.delete_message, call.message.chat.id, call.message.message_id)
         except: pass
 
     return {
         'get_user_sites': get_user_sites,
         'save_user_sites_list': save_user_sites_list,
-}
+    }
