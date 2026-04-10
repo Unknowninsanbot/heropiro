@@ -2664,7 +2664,7 @@ def handle_onyx_gate(message, gate_func, gate_name):
 # Mapping of command names to (gate_function, display_name)
 ONYX_GATES = {
     'rz': (check_razorpay, 'RazorPay'),
-    'br': (check_braintree, 'Braintree'),
+    'br': (check_b3_auth, 'B3 Auth'),
     'ppay': (check_paypal_onyx, 'PayPal (Onyx)'),
     'sk': (check_sk_gateway, 'SK Gateway'),
     'st': (check_stripe_onyx, 'Stripe (Onyx)'),
