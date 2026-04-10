@@ -341,6 +341,8 @@ def add_referral(referrer_id, new_user_id):
             except: pass
         return True
     return False
+    
+required_channel = "-1001980699196"
 
 def has_required_username(user):
     required = "@Nova_V4bot"
@@ -354,7 +356,9 @@ def force_subscribe_and_name(func):
         user_id = message.from_user.id
         user = message.from_user
         chat_type = message.chat.type
-
+        # 0. Owner exemption
+        if user_id in OWNER_ID:
+             return func(message)
         # 1. Channel subscription (EVERYONE must join)
         if not is_subscribed(user_id):
             markup = types.InlineKeyboardMarkup()
@@ -2543,7 +2547,8 @@ def process_cc_check(message):
             pass
 
         # Check site
-        api_response = check_site_shopify_direct(site, cc, proxy)
+        # Use external API
+        api_response = api_check_site(site, cc, proxy)
         response, status, gateway = process_response_shopify(api_response, price)
 
         # Detect CAPTCHA
