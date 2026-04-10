@@ -71,7 +71,8 @@ def save_user_sites_list(user_id, sites_list):
     data[str(user_id)] = sites_list
     save_user_sites(data)
 
-
+# User session storage (in-memory)
+user_sessions = {}
 # Price filter setting (default: no filter)
 price_filter = None
 
@@ -2224,36 +2225,74 @@ Use the <b>Single Check</b> or <b>Mass Check</b> buttons in the menu.
 @bot.callback_query_handler(func=lambda call: call.data == "show_owner")
 def show_owner_callback(call):
     if not is_owner(call.from_user.id):
-        bot.answer_callback_query(call.id, "🚫 Restricted.", show_alert=True)
+        bot.answer_callback_query(call.id, "🚫 Restricted: Supreme Overlords Only.", show_alert=True)
         return
+
+    bot.answer_callback_query(call.id)
+
     owner_text = """
-<b>👑 OWNER COMMANDS</b>
+<pre>┌─────────────────────────────────┐
+│        👑  OWNER  PANEL  👑      │
+└─────────────────────────────────┘</pre>
 
-<b>🌐 Sites</b>
-<code>/addurls</code> – add sites from .txt
-<code>/cleansites</code> – remove dead
+<b>🌐 SITE MANAGEMENT</b>
+<code>/addurls</code> – Add sites from .txt file
+<code>/addsingleurls</code> – Add single‑check sites
+<code>/splitsite N</code> – Split site list into N parts
+<code>/listsite [cat ID|price max]</code> – Export filtered sites
+<code>/cleansites</code> – Remove dead sites
+<code>/cleansinglesites</code> – Clean single‑check sites
+<code>/rsite &lt;url&gt;</code> – Remove a site
+<code>/rmsites</code> – Remove ALL sites
+<code>/viewsites</code> – List all sites
+<code>/viewsinglesites</code> – List single‑check sites
+<code>/rmsinglesite &lt;url&gt;</code> – Remove single site
+<code>/cleanfile</code> – Clean URLs from .txt file
 
-<b>🛡️ Proxies</b>
-<code>/addproxies</code> – bulk add
-<code>/cleanpro</code> – remove dead
+<b>🛡️ PROXY MANAGEMENT</b>
+<code>/addpro ip:port:user:pass</code> – Add single proxy
+<code>/addproxies</code> – Add proxies from .txt file
+<code>/cleanpro</code> – Remove dead global proxies
+<code>/rmpro</code> – Remove ALL proxies
 
-<b>👥 Users</b>
-<code>/pro &lt;id&gt; &lt;days&gt;</code> – approve
-<code>/rmuser &lt;id&gt;</code> – ban
+<b>👥 USER MANAGEMENT</b>
+<code>/pro &lt;userid&gt; &lt;days&gt;</code> – Approve user
+<code>/limit &lt;userid&gt; &lt;new_limit&gt;</code> – Change per‑upload limit
+<code>/setlimit &lt;userid&gt; &lt;daily_limit&gt;</code> – Change daily limit
+<code>/rmuser &lt;userid&gt;</code> – Remove/ban user
+<code>/grant &lt;chatid&gt;</code> – Approve group
+<code>/users</code> – List approved users
+<code>/groups</code> – List approved groups
 
-<b>💰 Codes</b>
-<code>/redeem &lt;days&gt; [count]</code>
+<b>💰 REDEEM CODES</b>
+<code>/redeem &lt;days&gt; [count]</code> – Generate trial codes
 
-<b>📊 Bot</b>
-<code>/stats</code>, <code>/broadcast</code>, <code>/setgatelimit</code>
+<b>⚙️ GATE LIMITS</b>
+<code>/setgatelimit &lt;gate&gt; &lt;max&gt;</code> – Set mass check limit per gate
+Example: <code>/setgatelimit adyen 300</code>
+
+<b>📊 BOT MANAGEMENT</b>
+<code>/stats</code> – Show statistics
+<code>/ping</code> – Check latency
+<code>/restart</code> – Restart bot
+<code>/setamo</code> – Set price filter for Shopify
+<code>/broadcast &lt;msg&gt;</code> – Send announcement to all users/groups
+<code>/forceunlock &lt;userid&gt;</code> – Release stuck user lock
+
+<b>📁 FILE SPLITTING</b>
+<code>/splitfile N</code> – Split uploaded .txt into N parts
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+<i>⚡ NOVA · <a href="tg://user?id=5963548505">⏤‌‌Unknownop ꯭𖠌</a></i>
 """
+
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="back_to_start"))
+
     try:
         bot.edit_message_text(owner_text, call.message.chat.id, call.message.message_id, parse_mode='HTML', reply_markup=markup)
-    except:
+    except Exception:
         bot.send_message(call.message.chat.id, owner_text, parse_mode='HTML', reply_markup=markup)
-    bot.answer_callback_query(call.id)
 
 
 # ============================================================================
@@ -2549,7 +2588,7 @@ def process_cc_check(message):
         # Check site
         # Use external API
         api_response = api_check_site(site, cc, proxy)
-        response, status, gateway = process_response_shopify(api_response, price)
+        response, status, gateway = process_api_response(api_response, price)
 
         # Detect CAPTCHA
         if "CAPTCHA" in response.upper():
@@ -2606,7 +2645,26 @@ def process_cc_check(message):
         parse_mode='HTML'
     )
 
-
+@bot.message_handler(commands=['forceunlock'])
+def handle_force_unlock(message):
+    if not is_owner(message.from_user.id):
+        return
+    try:
+        parts = message.text.split()
+        if len(parts) != 2:
+            bot.reply_to(message, "Usage: /forceunlock <user_id>")
+            return
+        target_id = int(parts[1])
+        set_user_busy(target_id, False)
+        # Also try to release semaphore if it was acquired
+        try:
+            mass_check_semaphore.release()
+        except:
+            pass
+        clear_stop(message.chat.id)  # clear any lingering stop flag
+        bot.reply_to(message, f"✅ User {target_id} unlocked.")
+    except Exception as e:
+        bot.reply_to(message, f"❌ Error: {e}")
 # ============================================================================
 # Generic handler for Onyx API single checks
 # ============================================================================
