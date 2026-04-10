@@ -31,7 +31,7 @@ from shopify_checker import check_site_shopify_direct, process_response_shopify
 from gates import check_paypal_fixed, check_paypal_general, PAYPAL_AMOUNT, check_stripe_api
 
 from gates import (
-    check_razorpay, check_braintree, check_paypal_onyx, check_sk_gateway,
+    check_razorpay, check_b3_auth, check_paypal_onyx, check_sk_gateway,
     check_stripe_onyx, check_app_auth, check_chaos, check_adyen, check_payflow,
     check_random, check_shopify_onyx, check_skrill, check_arcenus, check_random_stripe,
     check_payu
