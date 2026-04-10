@@ -348,7 +348,7 @@ def has_required_username(user):
     last = user.last_name or ""
     return required.lower() in first.lower() or required.lower() in last.lower()
     
-    def force_subscribe_and_name(func):
+def force_subscribe_and_name(func):
     @functools.wraps(func)
     def wrapper(message):
         user_id = message.from_user.id
