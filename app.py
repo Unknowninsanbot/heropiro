@@ -26,7 +26,7 @@ socket.setdefaulttimeout(30)
 from collections import Counter
 import logging
 logger = logging.getLogger(__name__)
-from complete_handler import setup_complete_handler, get_bin_info
+from complete_handler import setup_complete_handler, get_bin_info, stop_events, stop_lock, set_stop, clear_stop, is_stop_requested
 from shopify_checker import check_site_shopify_direct, process_response_shopify
 from gates import check_paypal_fixed, check_paypal_general, PAYPAL_AMOUNT, check_stripe_api
 
@@ -2894,6 +2894,24 @@ def _process_add_single_urls_file_thread(message):
         )
     except Exception as e:
         bot.send_message(message.chat.id, f"❌ Error: {str(e)}")
+
+@bot.message_handler(commands=['stop'])
+def global_handle_stop(message):
+    chat_id = message.chat.id
+    with stop_lock:
+        if chat_id in stop_events:
+            bot.reply_to(message, "⏸️ Stop already requested. Aborting after current card...")
+        else:
+            set_stop(chat_id)
+            bot.reply_to(message,
+                "⏸️ <b>Stop received.</b>\n\n"
+                "• Pending cards cancelled.\n"
+                "• Current card finishes soon.\n"
+                "• Unchecked cards will be saved.\n\n"
+                "<i>Please wait...</i>",
+                parse_mode='HTML')
+
+
 @bot.message_handler(commands=['viewsinglesites'])
 def handle_view_single_sites(message):
     if not is_owner(message.from_user.id):
