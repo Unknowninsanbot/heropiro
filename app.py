@@ -444,6 +444,7 @@ elif not isinstance(proxies_data, dict) or 'proxies' not in proxies_data:
 stats_data = load_json(STATS_FILE, default_stats)
 settings_data = load_json(SETTINGS_FILE, {"price_filter": None})
 users_data = load_json(USERS_FILE, {})
+cleanup_expired_users()
 groups_data = load_json(GROUPS_FILE, {})
 user_proxies_data = load_json(USER_PROXIES_FILE, {})
 codes_data = load_json(CODES_FILE, {"codes": {}})
@@ -684,6 +685,22 @@ def is_user_allowed(userid):
         return datetime.now() <= expiry_date
     except:
         return False
+
+def cleanup_expired_users():
+    now = datetime.now()
+    to_remove = []
+    for uid, data in users_data.items():
+        try:
+            expiry = datetime.fromisoformat(data.get('expiry', '2000-01-01'))
+            if expiry <= now:
+                to_remove.append(uid)
+        except:
+            to_remove.append(uid)
+    for uid in to_remove:
+        del users_data[uid]
+    if to_remove:
+        save_json(USERS_FILE, users_data)
+        print(f"🧹 Removed {len(to_remove)} expired users")
 # ============================================================================
 # 1. READ FILE DIRECTLY FROM TELEGRAM (NO DOWNLOAD)
 # ============================================================================
@@ -3153,29 +3170,92 @@ def handle_clear_my_sites(message):
 @bot.message_handler(commands=['info'])
 def handle_info(message):
     user_id = message.from_user.id
-    user_str = str(user_id)
-    if user_str in users_data:
+    target_user_id = user_id
+    target_user = message.from_user
+
+    # If owner and a mention/ID is provided, check that user instead
+    if is_owner(user_id):
+        parts = message.text.split()
+        if len(parts) >= 2:
+            target = parts[1]
+            # Remove @ if present
+            if target.startswith('@'):
+                target = target[1:]
+            # Try to get user info (if it's a numeric ID, use it directly)
+            try:
+                if target.isdigit():
+                    target_user_id = int(target)
+                else:
+                    # Not numeric – we can't reliably get user ID from username without API,
+                    # but we can try to find in our database by username? We'll just use the string as ID.
+                    # For simplicity, assume numeric ID is passed.
+                    bot.reply_to(message, "Please provide a numeric user ID.")
+                    return
+            except:
+                bot.reply_to(message, "Invalid user ID format.")
+                return
+
+    user_str = str(target_user_id)
+
+    # Owner viewing own info? Show god mode
+    if is_owner(target_user_id) and target_user_id == user_id:
+        info = f"""
+┏━━━━━━━⍟
+┃ 👑 <b>GOD MODE ENGAGED</b>
+┗━━━━━━━━━━━⊛
+
+🆔 <b>User ID:</b> <code>{html.escape(user_str)}</code>
+💠 <b>Status:</b> 🌌 Supreme Overlord
+♾️ <b>Access:</b> Infinite limits. No restrictions.
+"""
+    elif user_str in users_data:
         data = users_data[user_str]
-        expiry = datetime.fromisoformat(data['expiry'])
-        days_left = (expiry - datetime.now()).days
+        try:
+            expiry = datetime.fromisoformat(data['expiry'])
+        except:
+            expiry = datetime.now() - timedelta(days=1)
+        now = datetime.now()
+        days_left = (expiry - now).days
+        is_active = expiry > now
+
         limit = data.get('limit', 1000)
         daily_used = data.get('usage_today', 0)
         daily_limit = data.get('daily_limit', 10000)
+
+        if is_active:
+            role_badge = "✅ Active Premium"
+            days_display = f"{days_left} days left"
+        else:
+            role_badge = "⏳ Expired Premium"
+            days_display = f"Expired {abs(days_left)} days ago"
+
         info = f"""
 ┏━━━━━━━⍟
 ┃ <b>👤 USER INFO</b>
 ┗━━━━━━━━━━━⊛
 
-🆔 <b>User ID:</b> <code>{user_id}</code>
-⏳ <b>Expires:</b> {expiry.strftime('%Y-%m-%d %H:%M:%S')} ({days_left} days left)
+🆔 <b>User ID:</b> <code>{html.escape(user_str)}</code>
+⏳ <b>Expires:</b> {expiry.strftime('%Y-%m-%d %H:%M:%S')} ({days_display})
 📊 <b>Per‑upload limit:</b> {limit}
 📈 <b>Daily usage:</b> {daily_used}/{daily_limit}
-🔰 <b>Role:</b> Premium
+🔰 <b>Role:</b> {role_badge}
 """
+        if not is_active:
+            info += "\n⚠️ <i>Subscription expired. Renew to regain access.</i>"
     else:
-        info = "❌ You are not approved."
-    bot.reply_to(message, info, parse_mode='HTML')
+        info = f"""
+┏━━━━━━━⍟
+┃ 🪫 <b>BASIC ACCOUNT INFO</b>
+┗━━━━━━━━━━━⊛
 
+🆔 <b>User ID:</b> <code>{html.escape(user_str)}</code>
+🧱 <b>Status:</b> ❌ Unregistered / Free User
+🔒 <b>Access:</b> Denied. You need a subscription to run checks.
+
+<i>Hit the "Access Plans" button to upgrade your account!</i>
+"""
+
+    bot.reply_to(message, info, parse_mode='HTML')
 
 @bot.message_handler(commands=['listsite'])
 def handle_list_site(message):
