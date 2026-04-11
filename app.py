@@ -421,6 +421,22 @@ def force_subscribe_and_name(func):
 
         return func(message)
     return wrapper
+
+def cleanup_expired_users():
+    now = datetime.now()
+    to_remove = []
+    for uid, data in users_data.items():
+        try:
+            expiry = datetime.fromisoformat(data.get('expiry', '2000-01-01'))
+            if expiry <= now:
+                to_remove.append(uid)
+        except:
+            to_remove.append(uid)
+    for uid in to_remove:
+        del users_data[uid]
+    if to_remove:
+        save_json(USERS_FILE, users_data)
+        print(f"🧹 Removed {len(to_remove)} expired users")
 # Load data with proper structure validation
 # Default stats
 default_stats = {
@@ -686,21 +702,7 @@ def is_user_allowed(userid):
     except:
         return False
 
-def cleanup_expired_users():
-    now = datetime.now()
-    to_remove = []
-    for uid, data in users_data.items():
-        try:
-            expiry = datetime.fromisoformat(data.get('expiry', '2000-01-01'))
-            if expiry <= now:
-                to_remove.append(uid)
-        except:
-            to_remove.append(uid)
-    for uid in to_remove:
-        del users_data[uid]
-    if to_remove:
-        save_json(USERS_FILE, users_data)
-        print(f"🧹 Removed {len(to_remove)} expired users")
+
 # ============================================================================
 # 1. READ FILE DIRECTLY FROM TELEGRAM (NO DOWNLOAD)
 # ============================================================================
