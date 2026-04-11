@@ -99,19 +99,20 @@ SINGLE_SITES_FILE = "single_sites.json"
 # ============================================================================
 # FORCE SUBSCRIBE SETUP
 # ============================================================================
-required_channel = "@Nova_bot_update"  # <-- CHANGE TO YOUR CHANNEL USERNAME
+REQUIRED_CHATS = ["@Nova_bot_update", "-1001980699196"]
 
 def is_subscribed(user_id):
-    if not required_channel:
+    if not REQUIRED_CHATS:
         return True
-    try:
-        member = bot.get_chat_member(required_channel, user_id)
-        return member.status in ['creator', 'administrator', 'member']
-    except Exception as e:
-        print(f"Force subscribe check error: {e}")
-        return False
-
-
+    for chat_id in REQUIRED_CHATS:
+        try:
+            member = bot.get_chat_member(chat_id, user_id)
+            if member.status not in ['creator', 'administrator', 'member']:
+                return False
+        except Exception as e:
+            print(f"Force subscribe check error for {chat_id}: {e}")
+            return False
+    return True
 
 # ============================================================================
 # RATE LIMITER (prevents 429 errors)
@@ -343,7 +344,7 @@ def add_referral(referrer_id, new_user_id):
         return True
     return False
     
-required_channel = "-1001980699196"
+
 
 def has_required_username(user):
     required = "@Nova_V4bot"
@@ -357,25 +358,30 @@ def force_subscribe_and_name(func):
         user_id = message.from_user.id
         user = message.from_user
         chat_type = message.chat.type
-        # 0. Owner exemption
+
+        # 0. Owner bypass
         if user_id in OWNER_ID:
-             return func(message)
-        # 1. Channel subscription (EVERYONE must join)
+            return func(message)
+
+        # 1. Check subscription to all required chats
         if not is_subscribed(user_id):
             markup = types.InlineKeyboardMarkup()
-            btn1 = types.InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{required_channel.lstrip('@')}")
-            btn2 = types.InlineKeyboardButton("🔄 I've Joined", callback_data="check_subscription")
+            btn1 = types.InlineKeyboardButton("📢 Join Channel", url="https://t.me/Nova_bot_update")
+            btn2 = types.InlineKeyboardButton("👥 Join Group", url="https://t.me/+d4FuWKR6Ni9lNTdl")
+            btn3 = types.InlineKeyboardButton("🔄 I've Joined Both", callback_data="check_subscription")
             markup.add(btn1, btn2)
+            markup.add(btn3)
             prompt = f"""
 <pre>┌─────────────────────────────────┐
 │         🔒  ACCESS  DENIED       │
 └─────────────────────────────────┘</pre>
 
-<b>⚠️ You must join our official channel to use this bot.</b>
+<b>⚠️ You must join BOTH our channel and group to use this bot.</b>
 
-👉 <b>Channel:</b> {required_channel}
+📢 <b>Channel:</b> @Nova_bot_update
+👥 <b>Group:</b> @novabot_group
 
-<i>After joining, click the button below to verify.</i>
+<i>After joining both, click the button below to verify.</i>
 """
             bot.reply_to(message, prompt, parse_mode='HTML', reply_markup=markup)
             return
@@ -1689,56 +1695,50 @@ def help_name_callback(call):
 # ============================================================================
 @bot.callback_query_handler(func=lambda call: call.data == "menu_single_gate")
 def single_gate_menu(call):
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        types.InlineKeyboardButton("🛍️ Shopify", callback_data="single_shopify"),
-        types.InlineKeyboardButton("💰 PayPal Fixed", callback_data="single_pp")
-    )
-    markup.add(
-        types.InlineKeyboardButton("💰 PayPal General", callback_data="single_pp2"),
-        types.InlineKeyboardButton("💳 Stripe Auth", callback_data="single_stripe")
-    )
-    markup.add(
-        types.InlineKeyboardButton("🔷 B3 Auth", callback_data="single_b3"),
-        types.InlineKeyboardButton("🌀 Chaos Auth", callback_data="single_ch")
-    )
-    markup.add(
-        types.InlineKeyboardButton("🔷 Adyen Auth", callback_data="single_ad"),
-        types.InlineKeyboardButton("📱 App Auth", callback_data="single_ap")
-    )
-    markup.add(
-        types.InlineKeyboardButton("💸 Payflow", callback_data="single_pf"),
-        types.InlineKeyboardButton("🎲 Random Auth", callback_data="single_ra")
-    )
-    markup.add(
-        types.InlineKeyboardButton("🛍️ Shopify API", callback_data="single_shop"),
-        types.InlineKeyboardButton("💰 Skrill", callback_data="single_skrill")
-    )
-    markup.add(
-        types.InlineKeyboardButton("⚡ Stripe API", callback_data="single_st"),
-        types.InlineKeyboardButton("🌐 Arcenus", callback_data="single_arc")
-    )
-    markup.add(
-        types.InlineKeyboardButton("🎲 Random Stripe", callback_data="single_rst"),
-        types.InlineKeyboardButton("💳 RazorPay", callback_data="single_rz")
-    )
-    markup.add(
-        types.InlineKeyboardButton("🔷 PayU", callback_data="single_pu"),
-        types.InlineKeyboardButton("🔑 SK Gateway", callback_data="single_sk")
-    )
-    markup.add(
-        types.InlineKeyboardButton("💸 PayPal API", callback_data="single_ppay"),
-        types.InlineKeyboardButton("🔙 Back", callback_data="back_to_start")
-    )
+    bot.answer_callback_query(call.id)
+    
+    help_text = """
+<pre>┌─────────────────────────────────┐
+│      💳  SINGLE  CHECK  GATES    │
+└─────────────────────────────────┘</pre>
+
+<b>Use these commands directly in chat:</b>
+
+<code>/sh CC|MM|YYYY|CVV</code> – 🛍️ Shopify (Multi‑Site)
+<code>/pp CC|MM|YYYY|CVV</code> – 💰 PayPal Fixed ($1)
+<code>/pp2 CC|MM|YYYY|CVV</code> – 💰 PayPal General
+<code>/stripe CC|MM|YYYY|CVV</code> – 💳 Stripe Auth
+<code>/chk CC|MM|YYYY|CVV</code> – 🔷 B3 Auth (Braintree)
+<code>/ad CC|MM|YYYY|CVV</code> – 🔷 Adyen Auth
+<code>/ap CC|MM|YYYY|CVV</code> – 📱 App Based Auth
+<code>/ch CC|MM|YYYY|CVV</code> – 🌀 Chaos Auth
+<code>/pf CC|MM|YYYY|CVV</code> – 💸 Payflow
+<code>/ra CC|MM|YYYY|CVV</code> – 🎲 Random Auth
+<code>/shop CC|MM|YYYY|CVV</code> – 🛍️ Shopify (External)
+<code>/skrill CC|MM|YYYY|CVV</code> – 💰 Skrill
+<code>/st CC|MM|YYYY|CVV</code> – ⚡ Stripe (External)
+<code>/arc CC|MM|YYYY|CVV</code> – 🌐 Arcenus
+<code>/rst CC|MM|YYYY|CVV</code> – 🎲 Random Stripe
+<code>/rz CC|MM|YYYY|CVV</code> – 💳 RazorPay
+<code>/pu CC|MM|YYYY|CVV</code> – 🔷 PayU
+<code>/sk CC|MM|YYYY|CVV</code> – 🔑 SK Gateway
+<code>/ppay CC|MM|YYYY|CVV</code> – 💸 PayPal (External)
+
+<b>Example:</b> <code>/ad 4000000000000002|12|2028|123</code>
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+<i>⚡ NOVA · <a href='tg://user?id=5963548505'>⏤‌‌Unknownop ꯭𖠌</a></i>
+"""
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="back_to_start"))
+    
     bot.edit_message_text(
-        "<b>💳 Select a gateway for single check:</b>\n\n"
-        "<i>After selection, send the card in format: CC|MM|YYYY|CVV</i>",
+        help_text,
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
         parse_mode='HTML',
         reply_markup=markup
     )
-    bot.answer_callback_query(call.id)
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("single_"))
@@ -1803,6 +1803,8 @@ def process_single_gate_check(message):
 
 @bot.callback_query_handler(func=lambda call: call.data == "menu_mass_gate")
 def mass_gate_menu(call):
+    bot.answer_callback_query(call.id)
+    
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
         types.InlineKeyboardButton("🛍️ Shopify Multi", callback_data="run_mass_shopify"),
@@ -1826,11 +1828,11 @@ def mass_gate_menu(call):
     )
     markup.add(
         types.InlineKeyboardButton("🎲 Random Auth", callback_data="run_mass_random"),
-        types.InlineKeyboardButton("🛍️ Shopify API", callback_data="run_mass_shopify_onyx")
+        types.InlineKeyboardButton("🛍️ Shopify (Ext)", callback_data="run_mass_shopify_onyx")
     )
     markup.add(
         types.InlineKeyboardButton("💰 Skrill", callback_data="run_mass_skrill"),
-        types.InlineKeyboardButton("⚡ Stripe API", callback_data="run_mass_stripe_onyx")
+        types.InlineKeyboardButton("⚡ Stripe (Ext)", callback_data="run_mass_stripe_onyx")
     )
     markup.add(
         types.InlineKeyboardButton("🌐 Arcenus", callback_data="run_mass_arcenus"),
@@ -1842,18 +1844,37 @@ def mass_gate_menu(call):
     )
     markup.add(
         types.InlineKeyboardButton("🔑 SK Gateway", callback_data="run_mass_sk_gateway"),
-        types.InlineKeyboardButton("💸 PayPal API", callback_data="run_mass_paypal_onyx")
+        types.InlineKeyboardButton("💸 PayPal (Ext)", callback_data="run_mass_paypal_onyx")
     )
     markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="back_to_start"))
+
+    info_text = """
+<pre>┌─────────────────────────────────┐
+│      📦  MASS  CHECK  GATES      │
+└─────────────────────────────────┘</pre>
+
+<b>🔹 How to Mass Check:</b>
+1️⃣ Upload a <code>.txt</code> file with cards (one per line: <code>CC|MM|YYYY|CVV</code>)
+2️⃣ Add working proxies via <b>Proxy Manager</b>
+3️⃣ Click a gate below or type <code>/msh</code>
+
+<b>🔹 Free User Limits (per check):</b>
+• 🛍️ Shopify Multi‑Site : <b>1000</b> cards
+• 🔷 B3 Auth : <b>500</b> cards
+• 💰 PayPal / Stripe / Others : <b>200</b> cards
+
+<i>💎 Upgrade to Premium for higher limits!</i>
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+<i>⚡ NOVA · <a href='tg://user?id=5963548505'>⏤‌‌Unknownop ꯭𖠌</a></i>
+"""
     bot.edit_message_text(
-        "<b>📦 Select a gate for mass check:</b>\n\n"
-        "<i>Make sure you've uploaded a .txt file with cards first!</i>",
+        info_text,
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
         parse_mode='HTML',
         reply_markup=markup
     )
-    bot.answer_callback_query(call.id)
 
 
 # ============================================================================
