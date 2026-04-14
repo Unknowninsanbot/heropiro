@@ -439,8 +439,8 @@ def check_stripe_api(cc, proxy=None):
 # ============================================================================
 # B3 AUTH GATE (livresq.com)
 # ============================================================================
-EMAIL = "joykrissa+zmqtr@gmail.com"
-PASSWORD = "Nova@6999"
+EMAIL = "unknownentity_fst4i@mailsac.com"
+PASSWORD = "sgFM5!pCG9RWA!F"
 
 def h1():
     return {
