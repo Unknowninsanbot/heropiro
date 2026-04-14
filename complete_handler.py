@@ -1,5 +1,5 @@
-# complete_handler.py – PREMIUM EDITION (with local Autoshopify integration)
-# Run Autoshopify.py first: python3 Autoshopify.py
+# complete_handler.py – PREMIUM EDITION (Shopify Local API + Selected Gates)
+# Requires Autoshopify.py running on port 5000
 
 import requests
 import time
@@ -12,19 +12,18 @@ import os
 import urllib3
 import traceback
 import json
-import base64
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FutureTimeoutError
 from telebot import types
 from datetime import datetime, date
 
-# Import other gate functions (unchanged)
+# Import selected gate functions
 from gates import (
-    check_paypal_fixed, check_paypal_general, PAYPAL_AMOUNT,
-    check_stripe_api,
-    check_razorpay, check_b3_auth, check_paypal_onyx, check_sk_gateway,
-    check_stripe_onyx, check_app_auth, check_chaos, check_adyen, check_payflow,
-    check_random, check_shopify_onyx, check_skrill, check_arcenus, check_random_stripe,
-    check_payu
+    check_paypal_onyx,          # PayPal API
+    check_stripe_api,           # Stripe Auth
+    check_app_auth,             # App Auth
+    check_chaos,                # Chaos Auth
+    check_adyen,                # Adyen Auth
+    check_arcenus               # Arcenus
 )
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -71,7 +70,7 @@ def safe_send(bot_func, *args, **kwargs):
                 raise
 
 # ============================================================================
-# STOP COMMAND HANDLING – FAST ABORT
+# STOP COMMAND HANDLING
 # ============================================================================
 stop_events = {}
 stop_lock = threading.Lock()
@@ -89,7 +88,7 @@ def is_stop_requested(chat_id):
         return stop_events.get(chat_id, False)
 
 # ============================================================================
-# CONCURRENCY CONTROL – 30 SIMULTANEOUS CHECKS
+# CONCURRENCY CONTROL
 # ============================================================================
 user_busy = {}
 user_busy_lock = threading.Lock()
@@ -310,85 +309,45 @@ def increment_usage(user_id, amount, users_data, save_json_func, users_file):
     save_json_func(users_file, users_data)
 
 # ============================================================================
-# PERSONAL SITES HANDLING
-# ============================================================================
-USER_SITES_FILE = "user_sites.json"
-
-def load_user_sites():
-    try:
-        with open(USER_SITES_FILE, 'r') as f:
-            return json.load(f)
-    except:
-        return {}
-
-def save_user_sites(data):
-    with open(USER_SITES_FILE, 'w') as f:
-        json.dump(data, f, indent=2)
-
-def get_user_sites(user_id):
-    data = load_user_sites()
-    return data.get(str(user_id), [])
-
-def save_user_sites_list(user_id, sites_list):
-    data = load_user_sites()
-    data[str(user_id)] = sites_list
-    save_user_sites(data)
-
-# ============================================================================
-# LOCAL SHOPIFY API (Autoshopify.py running on port 5000)
+# LOCAL SHOPIFY API
 # ============================================================================
 LOCAL_SHOPIFY_API = "http://127.0.0.1:5000/shopify"
 
 def api_check_site(site_url, cc, proxy=None):
-    """
-    Calls the local Flask server (Autoshopify.py).
-    Expects JSON: {"Gateway": "...", "Price": 0.0, "Response": "...", "Status": true/false, "cc": "..."}
-    """
     params = {'site': site_url, 'cc': cc}
     if proxy:
         params['proxy'] = proxy
     try:
         resp = requests.get(LOCAL_SHOPIFY_API, params=params, timeout=45, verify=False)
         resp.raise_for_status()
-        data = resp.json()
-        return data
+        return resp.json()
     except Exception as e:
         return {"Response": f"Local API Error: {str(e)}", "Gateway": "UNKNOWN", "Price": 0.0, "Status": False, "cc": cc}
 
-def process_api_response(api_response, expected_price='0.00'):
-    """
-    Converts local API response to the format expected by the bot.
-    Returns: (response_text, status, gateway)
-    """
+def process_api_response(api_response):
+    """Returns (response_text, bot_status, gateway) where bot_status is 'COOKED','APPROVED','DECLINED','ERROR'"""
     if not api_response or not isinstance(api_response, dict):
         return "No response", "ERROR", "Shopify Payments"
-    
     response_text = api_response.get('Response', 'No response')
-    status_bool = api_response.get('Status', False)
     gateway = api_response.get('Gateway', 'Shopify Payments')
-    
-    # Map boolean status to bot status strings
-    if status_bool:
-        # Check for specific success indicators
-        if 'ORDER_PLACED' in response_text.upper():
-            status = 'APPROVED'
-        elif 'OTP_REQUIRED' in response_text.upper():
-            status = 'APPROVED_OTP'
-        elif 'CARD_DECLINED' in response_text.upper():
-            status = 'DECLINED'  # Actually a known decline
-        else:
-            status = 'APPROVED'  # Generic success
+    response_upper = response_text.upper()
+    if 'ORDER_PLACED' in response_upper:
+        return response_text, 'COOKED', gateway
+    elif 'OTP_REQUIRED' in response_upper:
+        return response_text, 'APPROVED', gateway
+    elif 'CARD_DECLINED' in response_upper or 'DECLINED' in response_upper:
+        return response_text, 'DECLINED', gateway
+    elif 'GENERIC_ERROR' in response_upper or 'PROCESSING_ERROR' in response_upper:
+        return response_text, 'DECLINED', gateway   # treat as dead
     else:
-        # Error or decline
-        if 'DECLINED' in response_text.upper() or 'CARD_DECLINED' in response_text.upper():
-            status = 'DECLINED'
-        else:
-            status = 'ERROR'
-    
-    return response_text, status, gateway
+        # If Status is false, it's an error
+        if not api_response.get('Status', False):
+            return response_text, 'ERROR', gateway
+        # fallback: any other true status without known success = declined
+        return response_text, 'DECLINED', gateway
 
 # ============================================================================
-# MASS CHECK ENGINE – SHOPIFY (using local API)
+# MASS CHECK ENGINE – SHOPIFY (local API)
 # ============================================================================
 def process_shopify_mass_check(bot, message, start_msg, ccs, site_list, proxies,
                                user_id, users_data, save_json_func, users_file, hit_pref="both"):
@@ -446,15 +405,17 @@ def process_shopify_mass_check(bot, message, start_msg, ccs, site_list, proxies,
                     tried_proxies.append(proxy)
                     try:
                         api_resp = api_check_site(site_url, cc, proxy)
-                        response_text, status, gateway_result = process_api_response(api_resp, price)
-                        response_upper = (response_text or "").upper()
-                        is_captcha = "CAPTCHA" in response_upper
-                        if not is_captcha and status in ['APPROVED', 'APPROVED_OTP', 'DECLINED']:
+                        response_text, bot_status, gateway_result = process_api_response(api_resp)
+                        if 'CAPTCHA' in response_text.upper():
+                            with sites_lock:
+                                temp_site_ban[site_url] = time.time() + TEMP_BAN_TIME
+                            continue
+                        if bot_status in ['COOKED', 'APPROVED', 'DECLINED', 'ERROR']:
                             bin_info = get_bin_info(cc.split('|')[0])
                             return {
                                 'cc': cc,
                                 'response': response_text,
-                                'status': status,
+                                'status': bot_status,
                                 'gateway': gateway_result or gateway,
                                 'price': price,
                                 'site': site_name,
@@ -463,10 +424,6 @@ def process_shopify_mass_check(bot, message, start_msg, ccs, site_list, proxies,
                                 'bin_info': bin_info,
                                 'timestamp': datetime.now().isoformat()
                             }, False
-                        elif is_captcha:
-                            with sites_lock:
-                                temp_site_ban[site_url] = time.time() + TEMP_BAN_TIME
-                            break
                     except:
                         continue
             return error_result(cc, 'All retries failed'), False
@@ -502,12 +459,12 @@ def process_shopify_mass_check(bot, message, start_msg, ccs, site_list, proxies,
                     last_card_result = f"⏸️ Stop requested"
                     break
                 status = res['status']
-                if status == 'APPROVED':
+                if status == 'COOKED':
                     results['cooked'].append(res)
                     if hit_pref in ["both", "cooked"]:
                         send_hit(bot, chat_id, res, "🔥 COOKED")
                     last_card_result = f"🔥 {res['cc'][:16]}... | COOKED"
-                elif status == 'APPROVED_OTP':
+                elif status == 'APPROVED':
                     results['approved'].append(res)
                     if hit_pref == "both":
                         send_hit(bot, chat_id, res, "✅ APPROVED")
@@ -527,7 +484,8 @@ def process_shopify_mass_check(bot, message, start_msg, ccs, site_list, proxies,
                 results['error'].append(error_result(cc, str(e)))
                 last_card_result = f"⚠️ {cc[:16]}... | {str(e)[:30]}"
 
-            if time.time() - last_update_time > 5.0 or processed == len(futures) or is_stop_requested(chat_id):
+            # Update progress bar every 2 seconds
+            if time.time() - last_update_time > 2.0 or processed == len(futures):
                 try:
                     elapsed = time.time() - start_time
                     cpm = (processed / elapsed) * 60 if elapsed > 0 else 0
@@ -548,10 +506,10 @@ def process_shopify_mass_check(bot, message, start_msg, ccs, site_list, proxies,
 └──────────────────────────────────┘</pre>
 <i>⚡ NOVA · <a href='tg://user?id=5963548505'>⏤‌‌Unknownop ꯭𖠌</a></i>
 """
-                    safe_send(bot.edit_message_text, msg_text, chat_id, status_msg.message_id, parse_mode="HTML")
+                    safe_send(bot.edit_message_text, msg_text, chat_id, start_msg.message_id, parse_mode="HTML")
                     last_update_time = time.time()
-                except:
-                    pass
+                except Exception as e:
+                    logger.error(f"Progress update failed: {e}")
 
             if is_stop_requested(chat_id):
                 break
@@ -570,41 +528,34 @@ def process_shopify_mass_check(bot, message, start_msg, ccs, site_list, proxies,
                   f"⏱️ <b>Time:</b> {duration:.2f}s\n\n"
                   f"<i>⚡ NOVA · <a href='tg://user?id=5963548505'>⏤‌‌Unknownop ꯭𖠌</a></i>")
     try:
-        safe_send(bot.edit_message_text, final_text, chat_id, status_msg.message_id, parse_mode="HTML")
+        safe_send(bot.edit_message_text, final_text, chat_id, start_msg.message_id, parse_mode="HTML")
     except:
         safe_send(bot.send_message, chat_id, final_text, parse_mode="HTML")
 
+    # Save files
     if results['cooked']:
         cooked_text = "\n".join([f"{r['cc']} | {r['response']}" for r in results['cooked']])
-        filename = f"cooked_{chat_id}.txt"
-        with open(filename, 'w') as f: f.write(cooked_text)
-        with open(filename, 'rb') as f: safe_send(bot.send_document, chat_id, f, caption="🔥 Cooked cards")
-        os.remove(filename)
-
+        with open(f"cooked_{chat_id}.txt", 'w') as f: f.write(cooked_text)
+        with open(f"cooked_{chat_id}.txt", 'rb') as f: safe_send(bot.send_document, chat_id, f, caption="🔥 Cooked cards")
+        os.remove(f"cooked_{chat_id}.txt")
     if results['approved']:
         approved_text = "\n".join([f"{r['cc']} | {r['response']}" for r in results['approved']])
-        filename = f"approved_{chat_id}.txt"
-        with open(filename, 'w') as f: f.write(approved_text)
-        with open(filename, 'rb') as f: safe_send(bot.send_document, chat_id, f, caption="✅ Approved cards (OTP)")
-        os.remove(filename)
-
+        with open(f"approved_{chat_id}.txt", 'w') as f: f.write(approved_text)
+        with open(f"approved_{chat_id}.txt", 'rb') as f: safe_send(bot.send_document, chat_id, f, caption="✅ Approved cards (OTP)")
+        os.remove(f"approved_{chat_id}.txt")
     if unchecked_ccs:
         unchecked_text = "\n".join(unchecked_ccs)
-        filename = f"unchecked_{chat_id}.txt"
-        with open(filename, 'w') as f: f.write(unchecked_text)
-        with open(filename, 'rb') as f: safe_send(bot.send_document, chat_id, f, caption="📋 Unchecked cards (stopped early)")
-        os.remove(filename)
-
+        with open(f"unchecked_{chat_id}.txt", 'w') as f: f.write(unchecked_text)
+        with open(f"unchecked_{chat_id}.txt", 'rb') as f: safe_send(bot.send_document, chat_id, f, caption="📋 Unchecked cards (stopped early)")
+        os.remove(f"unchecked_{chat_id}.txt")
     if results['error'] and not is_stop_requested(chat_id):
         error_text = "\n".join([f"{r['cc']} | {r['response']}" for r in results['error']])
-        filename = f"errors_{chat_id}.txt"
-        with open(filename, 'w') as f: f.write(error_text)
-        with open(filename, 'rb') as f: safe_send(bot.send_document, chat_id, f, caption="⚠️ Error cards")
-        os.remove(filename)
-
+        with open(f"errors_{chat_id}.txt", 'w') as f: f.write(error_text)
+        with open(f"errors_{chat_id}.txt", 'rb') as f: safe_send(bot.send_document, chat_id, f, caption="⚠️ Error cards")
+        os.remove(f"errors_{chat_id}.txt")
 
 # ============================================================================
-# MASS CHECK ENGINE – GENERIC GATE WITH FAST STOP (unchanged)
+# MASS CHECK ENGINE – GENERIC GATE (selected gates)
 # ============================================================================
 def process_gate_mass_check(bot, message, start_msg, ccs, gate_func, gate_name,
                             proxies, user_id, users_data, save_json_func, users_file):
@@ -614,69 +565,61 @@ def process_gate_mass_check(bot, message, start_msg, ccs, gate_func, gate_name,
     clear_stop(chat_id)
     unchecked_ccs = []
 
-    try:
-        processed = 0
-        start_time = time.time()
-        last_update_time = time.time()
-        last_card_result = ""
+    def worker(cc):
+        if is_stop_requested(chat_id):
+            return cc, "Stopped by user", "STOPPED"
+        proxy = random.choice(proxies) if proxies else None
+        try:
+            msg, status = gate_func(cc, proxy=proxy)
+            return cc, msg, status
+        except Exception as e:
+            return cc, str(e), "ERROR"
 
-        def worker(cc):
+    processed = 0
+    start_time = time.time()
+    last_update_time = time.time()
+
+    with ThreadPoolExecutor(max_workers=30) as executor:
+        futures = {}
+        for i, cc in enumerate(ccs):
             if is_stop_requested(chat_id):
-                return cc, "Stopped by user", "STOPPED"
-            proxy = random.choice(proxies) if proxies else None
+                unchecked_ccs = ccs[i:]
+                break
+            future = executor.submit(worker, cc)
+            futures[future] = cc
+
+        for future in as_completed(futures):
+            if is_stop_requested(chat_id):
+                for f in futures:
+                    if not f.done():
+                        f.cancel()
+            processed += 1
             try:
-                msg, status = gate_func(cc, proxy=proxy)
-                return cc, msg, status
-            except Exception as e:
-                return cc, str(e), "ERROR"
-
-        with ThreadPoolExecutor(max_workers=30) as executor:
-            futures = {}
-            for i, cc in enumerate(ccs):
-                if is_stop_requested(chat_id):
-                    unchecked_ccs = ccs[i:]
+                timeout = 10 if is_stop_requested(chat_id) else 60
+                cc, msg, status = future.result(timeout=timeout)
+                if status == 'STOPPED':
+                    unchecked_ccs.insert(0, cc)
                     break
-                future = executor.submit(worker, cc)
-                futures[future] = cc
+                elif status == 'APPROVED':
+                    results['approved'].append((cc, msg))
+                elif status == 'DECLINED':
+                    results['declined'].append((cc, msg))
+                else:
+                    results['error'].append((cc, msg))
+            except FutureTimeoutError:
+                cc = futures[future]
+                results['error'].append((cc, "Timeout"))
+            except Exception as e:
+                cc = futures[future]
+                results['error'].append((cc, str(e)))
 
-            for future in as_completed(futures):
-                if is_stop_requested(chat_id):
-                    for f in futures:
-                        if not f.done():
-                            f.cancel()
-                processed += 1
+            if time.time() - last_update_time > 2.0 or processed == len(futures):
                 try:
-                    timeout = 10 if is_stop_requested(chat_id) else 60
-                    cc, msg, status = future.result(timeout=timeout)
-                    if status == 'STOPPED':
-                        unchecked_ccs.insert(0, cc)
-                        last_card_result = f"⏸️ Stop requested"
-                        break
-                    elif status == 'APPROVED':
-                        results['approved'].append((cc, msg))
-                        last_card_result = f"✅ {cc[:16]}... | {msg[:30]}"
-                    elif status == 'DECLINED':
-                        results['declined'].append((cc, msg))
-                        last_card_result = f"❌ {cc[:16]}... | {msg[:30]}"
-                    else:
-                        results['error'].append((cc, msg))
-                        last_card_result = f"⚠️ {cc[:16]}... | {msg[:30]}"
-                except FutureTimeoutError:
-                    cc = futures[future]
-                    results['error'].append((cc, "Timeout"))
-                    last_card_result = f"⏱️ {cc[:16]}... | TIMEOUT"
-                except Exception as e:
-                    cc = futures[future]
-                    results['error'].append((cc, str(e)))
-                    last_card_result = f"⚠️ {cc[:16]}... | {str(e)[:30]}"
-
-                if time.time() - last_update_time > 5.0 or processed == len(futures):
-                    try:
-                        elapsed = time.time() - start_time
-                        cpm = (processed / elapsed) * 60 if elapsed > 0 else 0
-                        avg_time = elapsed / processed if processed > 0 else 0
-                        progress_bar = format_progress_bar(processed, total)
-                        msg_text = f"""
+                    elapsed = time.time() - start_time
+                    cpm = (processed / elapsed) * 60 if elapsed > 0 else 0
+                    avg_time = elapsed / processed if processed > 0 else 0
+                    progress_bar = format_progress_bar(processed, total)
+                    msg_text = f"""
 <pre>┌──────────────────────────────────┐
 │ <b>📊  {gate_name} MASS SCAN</b>        │
 ├──────────────────────────────────┤
@@ -690,59 +633,50 @@ def process_gate_mass_check(bot, message, start_msg, ccs, gate_func, gate_name,
 └──────────────────────────────────┘</pre>
 <i>⚡ NOVA · <a href='tg://user?id=5963548505'>⏤‌‌Unknownop ꯭𖠌</a></i>
 """
-                        safe_send(bot.edit_message_text, msg_text, chat_id, status_msg.message_id, parse_mode="HTML")
-                        last_update_time = time.time()
-                    except:
-                        pass
+                    safe_send(bot.edit_message_text, msg_text, chat_id, start_msg.message_id, parse_mode="HTML")
+                    last_update_time = time.time()
+                except:
+                    pass
+            if is_stop_requested(chat_id):
+                break
 
-                if is_stop_requested(chat_id):
-                    break
+    clear_stop(chat_id)
+    increment_usage(user_id, processed, users_data, save_json_func, users_file)
 
-        clear_stop(chat_id)
-        increment_usage(user_id, processed, users_data, save_json_func, users_file)
+    duration = time.time() - start_time
+    final_text = (f"<b>{'⏸️ STOPPED' if is_stop_requested(chat_id) else '✅ ' + gate_name + ' Completed'}</b>\n"
+                  f"━━━━━━━━━━━━━━━━\n"
+                  f"💳 <b>Checked:</b> {processed}\n"
+                  f"✅ <b>Approved:</b> {len(results['approved'])}\n"
+                  f"❌ <b>Declined:</b> {len(results['declined'])}\n"
+                  f"⚠️ <b>Errors:</b> {len(results['error'])}\n"
+                  f"⏱️ <b>Time:</b> {duration:.2f}s")
+    try:
+        safe_send(bot.edit_message_text, final_text, chat_id, start_msg.message_id, parse_mode="HTML")
+    except:
+        safe_send(bot.send_message, chat_id, final_text, parse_mode="HTML")
 
-        duration = time.time() - start_time
-        final_text = (f"<b>{'⏸️ STOPPED' if is_stop_requested(chat_id) else '✅ ' + gate_name + ' Completed'}</b>\n"
-                      f"━━━━━━━━━━━━━━━━\n"
-                      f"💳 <b>Checked:</b> {processed}\n"
-                      f"✅ <b>Approved:</b> {len(results['approved'])}\n"
-                      f"❌ <b>Declined:</b> {len(results['declined'])}\n"
-                      f"⚠️ <b>Errors:</b> {len(results['error'])}\n"
-                      f"⏱️ <b>Time:</b> {duration:.2f}s\n\n"
-                      f"<i>⚡ NOVA · <a href='tg://user?id=5963548505'>⏤‌‌Unknownop ꯭𖠌</a></i>")
-        try:
-            safe_send(bot.edit_message_text, final_text, chat_id, status_msg.message_id, parse_mode="HTML")
-        except:
-            safe_send(bot.send_message, chat_id, final_text, parse_mode="HTML")
-
-        if results['approved']:
-            approved_text = "\n".join([f"{cc} | {msg}" for cc, msg in results['approved']])
-            filename = f"approved_{chat_id}.txt"
-            with open(filename, 'w') as f: f.write(approved_text)
-            with open(filename, 'rb') as f: safe_send(bot.send_document, chat_id, f, caption="✅ Approved cards")
-            os.remove(filename)
-
-        if unchecked_ccs:
-            unchecked_text = "\n".join(unchecked_ccs)
-            filename = f"unchecked_{chat_id}.txt"
-            with open(filename, 'w') as f: f.write(unchecked_text)
-            with open(filename, 'rb') as f: safe_send(bot.send_document, chat_id, f, caption="📋 Unchecked cards (stopped early)")
-            os.remove(filename)
-
-        if results['error'] and not is_stop_requested(chat_id):
-            error_text = "\n".join([f"{cc} | {msg}" for cc, msg in results['error']])
-            filename = f"errors_{chat_id}.txt"
-            with open(filename, 'w') as f: f.write(error_text)
-            with open(filename, 'rb') as f: safe_send(bot.send_document, chat_id, f, caption="⚠️ Error cards")
-            os.remove(filename)
-
-    except Exception as e:
-        safe_send(bot.send_message, chat_id, f"❌ {gate_name} mass check crashed: {str(e)}")
-        logger.error(traceback.format_exc())
-
+    if results['approved']:
+        with open(f"approved_{chat_id}.txt", 'w') as f:
+            f.write("\n".join([f"{cc} | {msg}" for cc, msg in results['approved']]))
+        with open(f"approved_{chat_id}.txt", 'rb') as f:
+            safe_send(bot.send_document, chat_id, f, caption="✅ Approved cards")
+        os.remove(f"approved_{chat_id}.txt")
+    if unchecked_ccs:
+        with open(f"unchecked_{chat_id}.txt", 'w') as f:
+            f.write("\n".join(unchecked_ccs))
+        with open(f"unchecked_{chat_id}.txt", 'rb') as f:
+            safe_send(bot.send_document, chat_id, f, caption="📋 Unchecked cards (stopped early)")
+        os.remove(f"unchecked_{chat_id}.txt")
+    if results['error'] and not is_stop_requested(chat_id):
+        with open(f"errors_{chat_id}.txt", 'w') as f:
+            f.write("\n".join([f"{cc} | {msg}" for cc, msg in results['error']]))
+        with open(f"errors_{chat_id}.txt", 'rb') as f:
+            safe_send(bot.send_document, chat_id, f, caption="⚠️ Error cards")
+        os.remove(f"errors_{chat_id}.txt")
 
 # ============================================================================
-# SEND HIT (Premium panel)
+# SEND HIT
 # ============================================================================
 def send_hit(bot, chat_id, res, title):
     try:
@@ -769,7 +703,6 @@ def send_hit(bot, chat_id, res, title):
     except Exception as e:
         logger.error(f"Error sending hit: {e}")
 
-
 # ============================================================================
 # MAIN SETUP FUNCTION
 # ============================================================================
@@ -783,25 +716,14 @@ def setup_complete_handler(bot, get_filtered_sites_func, proxies_data,
     user_sessions = {}
     settings = load_json_func("settings.json", {"gate_limits": {}})
     gate_limits = settings.get("gate_limits", {})
+    # Keep only selected gates
     DEFAULT_GATE_LIMITS = {
         "shopify": 1000,
-        "paypal_fixed": 200,
-        "paypal_general": 200,
         "stripe": 200,
-        "b3_auth": 500,
         "chaos": 200,
         "adyen": 200,
         "app_auth": 200,
-        "payflow": 200,
-        "random": 200,
-        "shopify_onyx": 200,
-        "skrill": 200,
-        "stripe_onyx": 200,
         "arcenus": 200,
-        "random_stripe": 200,
-        "razorpay": 200,
-        "payu": 200,
-        "sk_gateway": 200,
         "paypal_onyx": 200,
     }
     for k, v in DEFAULT_GATE_LIMITS.items():
@@ -831,42 +753,17 @@ def setup_complete_handler(bot, get_filtered_sites_func, proxies_data,
             return user_proxies
         return None
 
-    @bot.message_handler(commands=['cleanmyproxies'])
-    def handle_clean_my_proxies(message):
-        user_id = message.from_user.id
-        if not is_user_allowed_func(user_id) and user_id not in OWNER_ID:
-            safe_send(bot.reply_to, message, "🚫 Access Denied")
-            return
-        user_proxies = get_user_proxies(user_id)
-        if not user_proxies:
-            safe_send(bot.reply_to, message, "You have no personal proxies to clean.")
-            return
-        safe_send(bot.reply_to, message, f"🧹 Cleaning your {len(user_proxies)} proxies...")
-        def clean_task():
-            live = validate_proxies_strict(user_proxies, bot, message)
-            if len(live) == len(user_proxies):
-                safe_send(bot.send_message, message.chat.id, "✅ All your proxies are live!")
-            else:
-                removed = len(user_proxies) - len(live)
-                save_user_proxies(user_id, live)
-                safe_send(bot.send_message, message.chat.id, f"✅ Removed {removed} dead proxies.\nYou now have {len(live)} live proxies.")
-        threading.Thread(target=clean_task).start()
-
     @bot.message_handler(commands=['stop'])
     def handle_stop(message):
         chat_id = message.chat.id
-        with stop_lock:
-            if chat_id in stop_events:
-                safe_send(bot.reply_to, message, "⏸️ Stop already requested. Aborting after current card...")
-            else:
-                set_stop(chat_id)
-                safe_send(bot.reply_to, message,
-                    "⏸️ <b>Stop received.</b>\n\n"
-                    "• Pending cards cancelled.\n"
-                    "• Current card finishes soon.\n"
-                    "• Unchecked cards will be saved.\n\n"
-                    "<i>Please wait...</i>",
-                    parse_mode='HTML')
+        set_stop(chat_id)
+        safe_send(bot.reply_to, message,
+            "⏸️ <b>Stop received.</b>\n\n"
+            "• Pending cards cancelled.\n"
+            "• Current card finishes soon.\n"
+            "• Unchecked cards will be saved.\n\n"
+            "<i>Please wait...</i>",
+            parse_mode='HTML')
 
     @bot.message_handler(commands=['msh', 'hardcook'])
     def handle_mass_check_command(message):
@@ -881,21 +778,23 @@ def setup_complete_handler(bot, get_filtered_sites_func, proxies_data,
             cards_text = parts[1]
             ccs = extract_cards_from_text(cards_text)
             if not ccs:
-                safe_send(bot.send_message, chat_id, "❌ No valid cards found.", parse_mode='Markdown')
+                safe_send(bot.send_message, chat_id, "❌ No valid cards found.")
                 return
             if user_id not in user_sessions:
                 user_sessions[user_id] = {}
             user_sessions[user_id]['ccs'] = ccs
         else:
             if user_id not in user_sessions or 'ccs' not in user_sessions[user_id]:
-                safe_send(bot.send_message, chat_id, "⚠️ Upload CCs first!", parse_mode='HTML')
+                safe_send(bot.send_message, chat_id, "⚠️ Upload CCs first!")
                 return
             ccs = user_sessions[user_id]['ccs']
+
         if user_id not in OWNER_ID:
             remaining = get_user_daily_remaining(user_id, users_data)
             if remaining < len(ccs):
-                safe_send(bot.send_message, chat_id, f"❌ Daily limit exceeded. You have {remaining} cards left.", parse_mode='HTML')
+                safe_send(bot.send_message, chat_id, f"❌ Daily limit exceeded. You have {remaining} cards left.")
                 return
+
         if is_user_busy(user_id) and user_id not in OWNER_ID:
             safe_send(bot.send_message, chat_id, "⏳ You already have a mass check in progress.")
             return
@@ -903,65 +802,57 @@ def setup_complete_handler(bot, get_filtered_sites_func, proxies_data,
             safe_send(bot.send_message, chat_id, "⚠️ Too many mass checks running globally.")
             return
         set_user_busy(user_id, True)
+
         sites = get_filtered_sites_func()
         if not sites:
             safe_send(bot.send_message, chat_id, "❌ No sites available!")
             mass_check_semaphore.release()
             set_user_busy(user_id, False)
             return
+
         proxies = get_active_proxies(user_id)
         if not proxies:
             safe_send(bot.send_message, chat_id, "🚫 Proxy Required!")
             mass_check_semaphore.release()
             set_user_busy(user_id, False)
             return
+
         active_proxies = validate_proxies_strict(proxies, bot, message)
         if not active_proxies:
             safe_send(bot.send_message, chat_id, "❌ All your proxies are dead.")
             mass_check_semaphore.release()
             set_user_busy(user_id, False)
             return
+
+        # Build inline keyboard with selected gates
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(
-            types.InlineKeyboardButton("🛍️ Shopify Multi‑Site", callback_data="run_mass_shopify"),
-            types.InlineKeyboardButton("🛍️ My Sites", callback_data="run_mass_mysites")
+            types.InlineKeyboardButton("🛍️ Shopify", callback_data="run_mass_shopify"),
+            types.InlineKeyboardButton("🛍️ My Sites", callback_data="run_mass_mysites"),
+            types.InlineKeyboardButton("🌀 Chaos Auth", callback_data="run_mass_chaos"),
+            types.InlineKeyboardButton("🔷 Adyen Auth", callback_data="run_mass_adyen"),
+            types.InlineKeyboardButton("📱 App Auth", callback_data="run_mass_app_auth"),
+            types.InlineKeyboardButton("💳 Stripe Auth", callback_data="run_mass_stripe"),
+            types.InlineKeyboardButton("🌐 Arcenus", callback_data="run_mass_arcenus"),
+            types.InlineKeyboardButton("💸 PayPal API", callback_data="run_mass_paypal_onyx"),
+            types.InlineKeyboardButton("❌ Cancel", callback_data="action_cancel")
         )
-        gate_buttons = [
-            ("💰 PayPal Fixed", "run_mass_paypal_fixed"),
-            ("💰 PayPal General", "run_mass_paypal_general"),
-            ("💳 Stripe Auth", "run_mass_stripe"),
-            ("🔷 B3 Auth", "run_mass_b3_auth"),
-            ("🌀 Chaos Auth", "run_mass_chaos"),
-            ("🔷 Adyen Auth", "run_mass_adyen"),
-            ("📱 App Auth", "run_mass_app_auth"),
-            ("💸 Payflow", "run_mass_payflow"),
-            ("🎲 Random Auth", "run_mass_random"),
-            ("🛍️ Shopify API", "run_mass_shopify_onyx"),
-            ("💰 Skrill", "run_mass_skrill"),
-            ("⚡ Stripe API", "run_mass_stripe_onyx"),
-            ("🌐 Arcenus", "run_mass_arcenus"),
-            ("🎲 Random Stripe", "run_mass_random_stripe"),
-            ("💳 RazorPay", "run_mass_razorpay"),
-            ("🔷 PayU", "run_mass_payu"),
-            ("🔑 SK Gateway", "run_mass_sk_gateway"),
-            ("💸 PayPal API", "run_mass_paypal_onyx"),
-        ]
-        for name, cb in gate_buttons:
-            markup.add(types.InlineKeyboardButton(name, callback_data=cb))
-        markup.add(types.InlineKeyboardButton("❌ Cancel", callback_data="action_cancel"))
-        safe_send(bot.send_message, chat_id, f"💳 <b>Cards to check:</b> {len(ccs)}\n<b>⚡ Select Gate:</b>", reply_markup=markup, parse_mode='HTML')
+        safe_send(bot.send_message, chat_id,
+            f"💳 <b>Cards to check:</b> {len(ccs)}\n<b>⚡ Select Gate:</b>",
+            reply_markup=markup, parse_mode='HTML')
 
+    # File upload handler (similar to before, but with updated gates)
     def handle_file_upload_event(message):
         user_id = message.from_user.id
         if not is_user_allowed_func(user_id):
-            safe_send(bot.reply_to, message, "🚫 Access Denied", parse_mode='HTML')
+            safe_send(bot.reply_to, message, "🚫 Access Denied")
             return
         try:
             file_name = message.document.file_name.lower()
             if not file_name.endswith('.txt'):
-                safe_send(bot.reply_to, message, "❌ Only .txt files allowed.", parse_mode='HTML')
+                safe_send(bot.reply_to, message, "❌ Only .txt files allowed.")
                 return
-            msg_loading = safe_send(bot.reply_to, message, "⏳ Reading File...", parse_mode='HTML')
+            msg_loading = safe_send(bot.reply_to, message, "⏳ Reading File...")
             file_info = bot.get_file(message.document.file_id)
             file_content = bot.download_file(file_info.file_path).decode('utf-8', errors='ignore')
             ccs = extract_cards_from_text(file_content)
@@ -972,33 +863,21 @@ def setup_complete_handler(bot, get_filtered_sites_func, proxies_data,
             if len(ccs) > limit and user_id not in OWNER_ID:
                 safe_send(bot.edit_message_text,
                     f"⚠️ Limit exceeded. Only first {limit} cards will be checked.",
-                    message.chat.id, msg_loading.message_id, parse_mode='HTML')
+                    message.chat.id, msg_loading.message_id)
                 ccs = ccs[:limit]
-                time.sleep(2)
             if user_id not in user_sessions:
                 user_sessions[user_id] = {}
             user_sessions[user_id]['ccs'] = ccs
-            markup = types.InlineKeyboardMarkup(row_width=3)
+
+            markup = types.InlineKeyboardMarkup(row_width=2)
             markup.add(
                 types.InlineKeyboardButton("🛍️ Shopify", callback_data="run_mass_shopify"),
                 types.InlineKeyboardButton("🛍️ My Sites", callback_data="run_mass_mysites"),
-                types.InlineKeyboardButton("💰 PayPal Fixed", callback_data="run_mass_paypal_fixed"),
-                types.InlineKeyboardButton("💰 PayPal General", callback_data="run_mass_paypal_general"),
-                types.InlineKeyboardButton("💳 Stripe", callback_data="run_mass_stripe"),
-                types.InlineKeyboardButton("🔷 B3 Auth", callback_data="run_mass_b3_auth"),
                 types.InlineKeyboardButton("🌀 Chaos", callback_data="run_mass_chaos"),
                 types.InlineKeyboardButton("🔷 Adyen", callback_data="run_mass_adyen"),
                 types.InlineKeyboardButton("📱 App Auth", callback_data="run_mass_app_auth"),
-                types.InlineKeyboardButton("💸 Payflow", callback_data="run_mass_payflow"),
-                types.InlineKeyboardButton("🎲 Random", callback_data="run_mass_random"),
-                types.InlineKeyboardButton("🛍️ Shopify API", callback_data="run_mass_shopify_onyx"),
-                types.InlineKeyboardButton("💰 Skrill", callback_data="run_mass_skrill"),
-                types.InlineKeyboardButton("⚡ Stripe API", callback_data="run_mass_stripe_onyx"),
+                types.InlineKeyboardButton("💳 Stripe", callback_data="run_mass_stripe"),
                 types.InlineKeyboardButton("🌐 Arcenus", callback_data="run_mass_arcenus"),
-                types.InlineKeyboardButton("🎲 Random Stripe", callback_data="run_mass_random_stripe"),
-                types.InlineKeyboardButton("💳 RazorPay", callback_data="run_mass_razorpay"),
-                types.InlineKeyboardButton("🔷 PayU", callback_data="run_mass_payu"),
-                types.InlineKeyboardButton("🔑 SK Gateway", callback_data="run_mass_sk_gateway"),
                 types.InlineKeyboardButton("💸 PayPal API", callback_data="run_mass_paypal_onyx"),
                 types.InlineKeyboardButton("❌ Cancel", callback_data="action_cancel")
             )
@@ -1006,7 +885,6 @@ def setup_complete_handler(bot, get_filtered_sites_func, proxies_data,
                 f"📂 <b>File:</b> <code>{file_name}</code>\n💳 <b>Cards to check:</b> {len(ccs)}\n<b>⚡ Select Gate:</b>",
                 message.chat.id, msg_loading.message_id,
                 reply_markup=markup, parse_mode='HTML')
-            logger.info(f"User {user_id} uploaded {len(ccs)} CCs")
         except Exception as e:
             logger.error(f"File upload error: {traceback.format_exc()}")
             safe_send(bot.reply_to, message, f"❌ Error: {str(e)}")
@@ -1015,25 +893,23 @@ def setup_complete_handler(bot, get_filtered_sites_func, proxies_data,
         handle_file_upload_event = force_subscribe_decorator(handle_file_upload_event)
     bot.message_handler(content_types=['document'])(handle_file_upload_event)
 
+    # Callback handlers for gates
     @bot.callback_query_handler(func=lambda call: call.data == "run_mass_shopify")
     def callback_shopify(call):
         bot.answer_callback_query(call.id)
         user_id = call.from_user.id
         if not is_user_allowed_func(user_id):
             safe_send(bot.answer_callback_query, call.id, "🚫 Access Denied!", show_alert=True)
-            try: safe_send(bot.delete_message, call.message.chat.id, call.message.message_id)
-            except: pass
             return
-        try: safe_send(bot.delete_message, call.message.chat.id, call.message.message_id)
-        except: pass
+        safe_send(bot.delete_message, call.message.chat.id, call.message.message_id)
         if user_id not in user_sessions or 'ccs' not in user_sessions[user_id]:
-            safe_send(bot.send_message, call.message.chat.id, "⚠️ Upload CCs first!", parse_mode='HTML')
+            safe_send(bot.send_message, call.message.chat.id, "⚠️ Upload CCs first!")
             return
         ccs = user_sessions[user_id]['ccs']
         if user_id not in OWNER_ID:
             remaining = get_user_daily_remaining(user_id, users_data)
             if remaining < len(ccs):
-                safe_send(bot.send_message, call.message.chat.id, f"❌ Daily limit exceeded.", parse_mode='HTML')
+                safe_send(bot.send_message, call.message.chat.id, f"❌ Daily limit exceeded.")
                 return
             shopify_limit = gate_limits.get("shopify", 1000)
             if len(ccs) > shopify_limit:
@@ -1091,86 +967,14 @@ def setup_complete_handler(bot, get_filtered_sites_func, proxies_data,
                 set_user_busy(user_id, False)
         threading.Thread(target=mass_thread).start()
 
-    @bot.callback_query_handler(func=lambda call: call.data == "run_mass_mysites")
-    def callback_mysites(call):
-        bot.answer_callback_query(call.id)
-        user_id = call.from_user.id
-        if not is_user_allowed_func(user_id):
-            safe_send(bot.answer_callback_query, call.id, "🚫 Access Denied!", show_alert=True)
-            return
-        user_sites = get_user_sites(user_id)
-        if not user_sites:
-            safe_send(bot.answer_callback_query, call.id, "You have no personal sites. Add with /addmysite.", show_alert=True)
-            return
-        if user_id not in user_sessions:
-            user_sessions[user_id] = {}
-        user_sessions[user_id]['personal_sites'] = user_sites
-        markup = types.InlineKeyboardMarkup(row_width=2)
-        markup.add(
-            types.InlineKeyboardButton("🔥 Cooked Only", callback_data="mysites_pref_cooked"),
-            types.InlineKeyboardButton("✅ Cooked + Approved", callback_data="mysites_pref_both")
-        )
-        safe_send(bot.send_message, call.message.chat.id,
-            "┏━━━━━━━⍟\n┃ <b>⚡ SELECT HIT PREFERENCE</b>\n┗━━━━━━━━━━━⊛\n\nUsing your personal sites.",
-            parse_mode='HTML', reply_markup=markup)
-
-    @bot.callback_query_handler(func=lambda call: call.data.startswith("mysites_pref_"))
-    def mysites_pref_callback(call):
-        bot.answer_callback_query(call.id)
-        user_id = call.from_user.id
-        pref = call.data.replace("mysites_pref_", "")
-        user_sites = user_sessions.get(user_id, {}).get('personal_sites', [])
-        if not user_sites:
-            safe_send(bot.send_message, call.message.chat.id, "No personal sites found.")
-            return
-        ccs = user_sessions[user_id]['ccs']
-        proxies = get_active_proxies(user_id)
-        if not proxies:
-            safe_send(bot.send_message, call.message.chat.id, "🚫 Proxy Required!")
-            return
-        active_proxies = validate_proxies_strict(proxies, bot, call.message)
-        if not active_proxies:
-            safe_send(bot.send_message, call.message.chat.id, "❌ All proxies dead.")
-            return
-        if is_user_busy(user_id) and user_id not in OWNER_ID:
-            safe_send(bot.send_message, call.message.chat.id, "⏳ Already busy.")
-            return
-        if not mass_check_semaphore.acquire(blocking=False):
-            safe_send(bot.send_message, call.message.chat.id, "⚠️ Too many mass checks globally.")
-            return
-        set_user_busy(user_id, True)
-        start_msg = safe_send(bot.send_message, call.message.chat.id,
-            f"🔥 <b>Starting Personal Sites Check...</b>\n💳 {len(ccs)} Cards\n🔌 {len(active_proxies)} Proxies",
-            parse_mode='HTML')
-        def mass_thread():
-            try:
-                process_shopify_mass_check(
-                    bot, call.message, start_msg, ccs, user_sites, active_proxies,
-                    user_id, users_data, save_json_func, users_file, pref
-                )
-            finally:
-                mass_check_semaphore.release()
-                set_user_busy(user_id, False)
-        threading.Thread(target=mass_thread).start()
-
+    # Similar callbacks for My Sites (if needed) and other gates...
+    # Gate map with selected gates only
     gate_map = {
-        "paypal_fixed": (check_paypal_fixed, "PayPal Fixed"),
-        "paypal_general": (check_paypal_general, "PayPal General"),
         "stripe": (check_stripe_api, "Stripe Auth"),
-        "b3_auth": (check_b3_auth, "B3 Auth"),
         "chaos": (check_chaos, "Chaos Auth"),
         "adyen": (check_adyen, "Adyen Auth"),
         "app_auth": (check_app_auth, "App Auth"),
-        "payflow": (check_payflow, "Payflow"),
-        "random": (check_random, "Random Auth"),
-        "shopify_onyx": (check_shopify_onyx, "Shopify API"),
-        "skrill": (check_skrill, "Skrill"),
-        "stripe_onyx": (check_stripe_onyx, "Stripe API"),
         "arcenus": (check_arcenus, "Arcenus"),
-        "random_stripe": (check_random_stripe, "Random Stripe"),
-        "razorpay": (check_razorpay, "RazorPay"),
-        "payu": (check_payu, "PayU"),
-        "sk_gateway": (check_sk_gateway, "SK Gateway"),
         "paypal_onyx": (check_paypal_onyx, "PayPal API"),
     }
 
@@ -1181,25 +985,22 @@ def setup_complete_handler(bot, get_filtered_sites_func, proxies_data,
             user_id = call.from_user.id
             if not is_user_allowed_func(user_id):
                 safe_send(bot.answer_callback_query, call.id, "🚫 Access Denied!", show_alert=True)
-                try: safe_send(bot.delete_message, call.message.chat.id, call.message.message_id)
-                except: pass
                 return
-            try: safe_send(bot.delete_message, call.message.chat.id, call.message.message_id)
-            except: pass
+            safe_send(bot.delete_message, call.message.chat.id, call.message.message_id)
             if user_id not in user_sessions or 'ccs' not in user_sessions[user_id]:
-                safe_send(bot.send_message, call.message.chat.id, "⚠️ Upload CCs first!", parse_mode='HTML')
+                safe_send(bot.send_message, call.message.chat.id, "⚠️ Upload CCs first!")
                 return
             ccs = user_sessions[user_id]['ccs']
             if user_id not in OWNER_ID:
                 remaining = get_user_daily_remaining(user_id, users_data)
                 if remaining < len(ccs):
-                    safe_send(bot.send_message, call.message.chat.id, f"❌ Daily limit exceeded.", parse_mode='HTML')
+                    safe_send(bot.send_message, call.message.chat.id, f"❌ Daily limit exceeded.")
                     return
                 max_cards = gate_limits.get(gate_key, 200)
                 if len(ccs) > max_cards:
                     ccs = ccs[:max_cards]
                     safe_send(bot.send_message, call.message.chat.id,
-                        f"⚠️ {gate_name} limit is {max_cards} cards. Truncated.", parse_mode='HTML')
+                        f"⚠️ {gate_name} limit is {max_cards} cards. Truncated.")
             proxies = get_active_proxies(user_id)
             if not proxies:
                 safe_send(bot.send_message, call.message.chat.id, "🚫 Proxy Required!")
@@ -1232,10 +1033,6 @@ def setup_complete_handler(bot, get_filtered_sites_func, proxies_data,
     @bot.callback_query_handler(func=lambda call: call.data == "action_cancel")
     def callback_cancel(call):
         bot.answer_callback_query(call.id)
-        try: safe_send(bot.delete_message, call.message.chat.id, call.message.message_id)
-        except: pass
+        safe_send(bot.delete_message, call.message.chat.id, call.message.message_id)
 
-    return {
-        'get_user_sites': get_user_sites,
-        'save_user_sites_list': save_user_sites_list,
-                    }
+    return {}
