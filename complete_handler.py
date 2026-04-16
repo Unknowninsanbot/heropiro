@@ -270,7 +270,7 @@ def format_progress_bar(processed, total, length=15):
     percent = processed / total
     filled = int(length * percent)
     bar = '█' * filled + '▒' * (length - filled)
-    return f"<code>{bar}</code> {percent*100:.1f}%"
+    return f"{bar} {percent*100:.1f}%"
 
 # ============================================================================
 # USAGE TRACKING
@@ -347,7 +347,7 @@ def process_api_response(api_response):
         return response_text, 'DECLINED', gateway
 
 # ============================================================================
-# MASS CHECK ENGINE – SHOPIFY (local API)
+# MASS CHECK ENGINE – SHOPIFY (local API) - FIXED PROGRESS BAR
 # ============================================================================
 def process_shopify_mass_check(bot, message, start_msg, ccs, site_list, proxies,
                                user_id, users_data, save_json_func, users_file, hit_pref="both"):
@@ -484,28 +484,23 @@ def process_shopify_mass_check(bot, message, start_msg, ccs, site_list, proxies,
                 results['error'].append(error_result(cc, str(e)))
                 last_card_result = f"⚠️ {cc[:16]}... | {str(e)[:30]}"
 
-            # Update progress bar every 2 seconds
+            # Update progress bar every 2 seconds - FIXED FORMATTING
             if time.time() - last_update_time > 2.0 or processed == len(futures):
                 try:
                     elapsed = time.time() - start_time
                     cpm = (processed / elapsed) * 60 if elapsed > 0 else 0
                     avg_time = elapsed / processed if processed > 0 else 0
                     progress_bar = format_progress_bar(processed, total)
-                    msg_text = f"""
-<pre>┌──────────────────────────────────┐
-│ <b>📊  SHOPIFY MASS SCAN</b>          │
-├──────────────────────────────────┤
-│  {progress_bar}           
-│                                  
-│  🔥  Cooked     :  <b>{len(results['cooked']):>4}</b>        
-│  ✅  Approved   :  <b>{len(results['approved']):>4}</b>      
-│  ❌  Dead       :  <b>{len(results['dead']):>4}</b>        
-│  ⚠️  Errors     :  <b>{len(results['error']):>4}</b>        
-│                                  
-│  ⚡ CPM : {cpm:.1f}   |  ⏱️ Avg : {avg_time:.1f}s
-└──────────────────────────────────┘</pre>
-<i>⚡ NOVA · <a href='tg://user?id=5963548505'>⏤‌‌Unknownop ꯭𖠌</a></i>
-"""
+                    msg_text = f"""<b>📊 SHOPIFY MASS SCAN</b>
+<code>{progress_bar}</code>
+
+<b>🔥 Cooked:</b> {len(results['cooked'])}
+<b>✅ Approved:</b> {len(results['approved'])}
+<b>❌ Dead:</b> {len(results['dead'])}
+<b>⚠️ Errors:</b> {len(results['error'])}
+
+<b>⚡ CPM:</b> {cpm:.1f} | <b>⏱️ Avg:</b> {avg_time:.1f}s
+<i>⚡ NOVA · Unknownop</i>"""
                     safe_send(bot.edit_message_text, msg_text, chat_id, start_msg.message_id, parse_mode="HTML")
                     last_update_time = time.time()
                 except Exception as e:
@@ -526,7 +521,7 @@ def process_shopify_mass_check(bot, message, start_msg, ccs, site_list, proxies,
                   f"❌ <b>Dead:</b> {len(results['dead'])}\n"
                   f"⚠️ <b>Errors:</b> {len(results['error'])}\n"
                   f"⏱️ <b>Time:</b> {duration:.2f}s\n\n"
-                  f"<i>⚡ NOVA · <a href='tg://user?id=5963548505'>⏤‌‌Unknownop ꯭𖠌</a></i>")
+                  f"<i>⚡ NOVA · Unknownop</i>")
     try:
         safe_send(bot.edit_message_text, final_text, chat_id, start_msg.message_id, parse_mode="HTML")
     except:
@@ -555,7 +550,7 @@ def process_shopify_mass_check(bot, message, start_msg, ccs, site_list, proxies,
         os.remove(f"errors_{chat_id}.txt")
 
 # ============================================================================
-# MASS CHECK ENGINE – GENERIC GATE (selected gates)
+# MASS CHECK ENGINE – GENERIC GATE (selected gates) - FIXED PROGRESS BAR
 # ============================================================================
 def process_gate_mass_check(bot, message, start_msg, ccs, gate_func, gate_name,
                             proxies, user_id, users_data, save_json_func, users_file):
@@ -619,20 +614,15 @@ def process_gate_mass_check(bot, message, start_msg, ccs, gate_func, gate_name,
                     cpm = (processed / elapsed) * 60 if elapsed > 0 else 0
                     avg_time = elapsed / processed if processed > 0 else 0
                     progress_bar = format_progress_bar(processed, total)
-                    msg_text = f"""
-<pre>┌──────────────────────────────────┐
-│ <b>📊  {gate_name} MASS SCAN</b>        │
-├──────────────────────────────────┤
-│  {progress_bar}           
-│                                  
-│  ✅  Approved   :  <b>{len(results['approved']):>4}</b>        
-│  ❌  Declined   :  <b>{len(results['declined']):>4}</b>      
-│  ⚠️  Errors     :  <b>{len(results['error']):>4}</b>        
-│                                  
-│  ⚡ CPM : {cpm:.1f}   |  ⏱️ Avg : {avg_time:.1f}s
-└──────────────────────────────────┘</pre>
-<i>⚡ NOVA · <a href='tg://user?id=5963548505'>⏤‌‌Unknownop ꯭𖠌</a></i>
-"""
+                    msg_text = f"""<b>📊 {gate_name} MASS SCAN</b>
+<code>{progress_bar}</code>
+
+<b>✅ Approved:</b> {len(results['approved'])}
+<b>❌ Declined:</b> {len(results['declined'])}
+<b>⚠️ Errors:</b> {len(results['error'])}
+
+<b>⚡ CPM:</b> {cpm:.1f} | <b>⏱️ Avg:</b> {avg_time:.1f}s
+<i>⚡ NOVA · Unknownop</i>"""
                     safe_send(bot.edit_message_text, msg_text, chat_id, start_msg.message_id, parse_mode="HTML")
                     last_update_time = time.time()
                 except:
@@ -841,7 +831,7 @@ def setup_complete_handler(bot, get_filtered_sites_func, proxies_data,
             f"💳 <b>Cards to check:</b> {len(ccs)}\n<b>⚡ Select Gate:</b>",
             reply_markup=markup, parse_mode='HTML')
 
-    # File upload handler (similar to before, but with updated gates)
+    # File upload handler
     def handle_file_upload_event(message):
         user_id = message.from_user.id
         if not is_user_allowed_func(user_id):
@@ -967,7 +957,6 @@ def setup_complete_handler(bot, get_filtered_sites_func, proxies_data,
                 set_user_busy(user_id, False)
         threading.Thread(target=mass_thread).start()
 
-    # Similar callbacks for My Sites (if needed) and other gates...
     # Gate map with selected gates only
     gate_map = {
         "stripe": (check_stripe_api, "Stripe Auth"),
