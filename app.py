@@ -152,7 +152,8 @@ from pymongo.mongo_client import MongoClient
 from pymongo.server_api import ServerApi
 import requests
 
-uri = "mongodb://rahll_db_user:k0RRXUHqnXMgsCJx@ac-cf1jjpz-shard-00-00.aom0bxs.mongodb.net:27017,ac-cf1jjpz-shard-00-01.aom0bxs.mongodb.net:27017,ac-cf1jjpz-shard-00-02.aom0bxs.mongodb.net:27017/?ssl=true&replicaSet=atlas-z75igo-shard-0&authSource=admin&appName=Cluster0"
+uri = "mongodb://smuerqf_db_user:IPxpmjI2EcKMBBce@ac-amrf1zi-shard-00-00.u9chbbk.mongodb.net:27017,ac-amrf1zi-shard-00-01.u9chbbk.mongodb.net:27017,ac-amrf1zi-shard-00-02.u9chbbk.mongodb.net:27017/?ssl=true&replicaSet=atlas-pbitqq-shard-0&authSource=admin&appName=Cluster0"
+# Create client with conservative settings for Railway
 client = MongoClient(
     uri,
     server_api=ServerApi('1'),
