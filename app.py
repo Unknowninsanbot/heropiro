@@ -41,7 +41,7 @@ from gates import (
     check_stripe_api,
     check_b3_auth,
 )
-BOT_TOKEN = "8395369201:AAEUhgZ9pwsVr3E7uWS_Q0Tr91lKAPzT568"
+BOT_TOKEN = "8663538819:AAECO_3yvH1tb6bUCBP64L7u-f9m5o723Eo"
 OWNER_ID = [5963548505, 1614278744]
 DARKS_ID = 5963548505
 
