@@ -734,3 +734,72 @@ def check_paypal_onyx(cc, proxy=None):
 
 def check_braintree_api(cc, proxy=None):
     return _check_gateway_api(cc, "braintree", "Braintree API")
+
+# ============================================================================
+# SHOPIFY API (Remote or Local)
+# ============================================================================
+import requests
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+SHOPIFY_API_ENDPOINT = "http://127.0.0.1:5000/shopify"   # Use localhost if running on same VPS
+
+def check_shopify_api(site_url, cc, proxy=None):
+    """
+    Call the Shopify API endpoint.
+    Returns dict with keys: Response, status, gateway, price, site
+    """
+    params = {'site': site_url, 'cc': cc}
+    if proxy:
+        params['proxy'] = proxy
+
+    try:
+        resp = requests.get(SHOPIFY_API_ENDPOINT, params=params, timeout=45, verify=False)
+        resp.raise_for_status()
+        data = resp.json()
+
+        # Extract fields from API response
+        response_msg = data.get('Response', 'Unknown')
+        gateway = data.get('Gateway', 'Shopify Payments')
+        price = data.get('Price', '0.00')
+        api_status = data.get('Status', False)
+
+        # Map to bot status codes
+        if response_msg == "ORDER_PLACED" or "APPROVED" in response_msg.upper():
+            bot_status = 'APPROVED'
+        elif "OTP" in response_msg.upper():
+            bot_status = 'APPROVED_OTP'
+        elif "DECLINED" in response_msg.upper():
+            bot_status = 'DECLINED'
+        elif not api_status:
+            bot_status = 'ERROR'
+        else:
+            bot_status = 'DECLINED'
+
+        return {
+            'Response': response_msg,
+            'status': bot_status,
+            'gateway': gateway,
+            'price': str(price),
+            'site': site_url
+        }
+
+    except Exception as e:
+        return {
+            'Response': f"API Error: {str(e)}",
+            'status': 'ERROR',
+            'gateway': 'Shopify Payments',
+            'price': '0.00',
+            'site': site_url
+        }
+
+def process_shopify_api_response(api_response):
+    """
+    Convert dict from check_shopify_api to (message, status, gateway) tuple.
+    """
+    if not api_response or not isinstance(api_response, dict):
+        return "System Error", "ERROR", "Shopify Payments"
+    msg = api_response.get('Response', 'Unknown')
+    status = api_response.get('status', 'ERROR')
+    gateway = api_response.get('gateway', 'Shopify Payments')
+    return msg, status, gateway
